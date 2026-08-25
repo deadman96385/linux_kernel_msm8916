@@ -34,6 +34,7 @@ struct qcom_usb_hs_phy {
 	struct regulator *v1p8;
 	struct regulator *v3p3;
 	struct reset_control *reset;
+	unsigned int init_seq_len;
 	struct extcon_dev *vbus_edev;
 	struct notifier_block vbus_notify;
 	struct ulpi_seq init_seq[];
@@ -109,7 +110,7 @@ static int qcom_usb_hs_phy_power_on(struct phy *phy)
 {
 	struct qcom_usb_hs_phy *uphy = phy_get_drvdata(phy);
 	struct ulpi *ulpi = uphy->ulpi;
-	const struct ulpi_seq *seq;
+	unsigned int i;
 	int ret, state;
 
 	ret = clk_prepare_enable(uphy->ref_clk);
@@ -141,9 +142,10 @@ static int qcom_usb_hs_phy_power_on(struct phy *phy)
 	if (ret)
 		goto err_3p3;
 
-	for (seq = uphy->init_seq; seq->addr; seq++) {
-		ret = ulpi_write(ulpi, ULPI_EXT_VENDOR_SPECIFIC + seq->addr,
-				 seq->val);
+	for (i = 0; i < uphy->init_seq_len; i++) {
+		ret = ulpi_write(ulpi,
+				 ULPI_EXT_VENDOR_SPECIFIC + uphy->init_seq[i].addr,
+				 uphy->init_seq[i].val);
 		if (ret)
 			goto err_ulpi;
 	}
@@ -212,20 +214,23 @@ static int qcom_usb_hs_phy_probe(struct ulpi *ulpi)
 	size = of_property_count_u8_elems(ulpi->dev.of_node, "qcom,init-seq");
 	if (size < 0)
 		size = 0;
+	if (size % sizeof(*uphy->init_seq))
+		return dev_err_probe(&ulpi->dev, -EINVAL,
+				     "invalid qcom,init-seq length\n");
 
-	uphy = devm_kzalloc(&ulpi->dev, struct_size(uphy, init_seq, (size / 2) + 1), GFP_KERNEL);
+	uphy = devm_kzalloc(&ulpi->dev,
+			    struct_size(uphy, init_seq,
+					size / sizeof(*uphy->init_seq)),
+			    GFP_KERNEL);
 	if (!uphy)
 		return -ENOMEM;
 	ulpi_set_drvdata(ulpi, uphy);
 	uphy->ulpi = ulpi;
-
+	uphy->init_seq_len = size / sizeof(*uphy->init_seq);
 	ret = of_property_read_u8_array(ulpi->dev.of_node, "qcom,init-seq",
 					(u8 *)uphy->init_seq, size);
 	if (ret && size)
 		return ret;
-	/* NUL terminate */
-	uphy->init_seq[size / 2].addr = uphy->init_seq[size / 2].val = 0;
-
 	uphy->ref_clk = clk = devm_clk_get(&ulpi->dev, "ref");
 	if (IS_ERR(clk))
 		return PTR_ERR(clk);
