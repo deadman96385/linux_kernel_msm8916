@@ -284,6 +284,16 @@ static void ci_hdrc_msm_remove(struct platform_device *pdev)
 	clk_disable_unprepare(ci->core_clk);
 }
 
+static void ci_hdrc_msm_shutdown(struct platform_device *pdev)
+{
+	/*
+	 * Tear down the child controller before a warm reboot.  Some Qualcomm
+	 * boot chains do not reset the USB PHY, which otherwise leaves the host
+	 * seeing the previous gadget connection and prevents re-enumeration.
+	 */
+	ci_hdrc_msm_remove(pdev);
+}
+
 static const struct of_device_id msm_ci_dt_match[] = {
 	{ .compatible = "qcom,ci-hdrc", },
 	{ }
@@ -293,6 +303,7 @@ MODULE_DEVICE_TABLE(of, msm_ci_dt_match);
 static struct platform_driver ci_hdrc_msm_driver = {
 	.probe = ci_hdrc_msm_probe,
 	.remove = ci_hdrc_msm_remove,
+	.shutdown = ci_hdrc_msm_shutdown,
 	.driver = {
 		.name = "msm_hsusb",
 		.of_match_table = msm_ci_dt_match,
