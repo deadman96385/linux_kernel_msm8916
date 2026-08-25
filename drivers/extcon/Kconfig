@@ -125,6 +125,16 @@ config EXTCON_MAX77843
 	  Maxim MAX77843. The MAX77843 MUIC is a USB port accessory
 	  detector add switch.
 
+config EXTCON_MAX77849
+	tristate "Maxim MAX77849 EXTCON and USB OTG support"
+	depends on MFD_MAX77849 && CHARGER_MAX77849
+	select REGMAP_I2C
+	help
+	  Support the Micro-USB Interface Controller in the Maxim MAX77849.
+	  The driver reports USB device, charger, and host cable states, switches
+	  the USB data path, applies source-specific charger limits, and controls
+	  the MAX77849 OTG boost mode. The module is named extcon-max77849.
+
 config EXTCON_MAX8997
 	tristate "Maxim MAX8997 EXTCON Support"
 	depends on MFD_MAX8997

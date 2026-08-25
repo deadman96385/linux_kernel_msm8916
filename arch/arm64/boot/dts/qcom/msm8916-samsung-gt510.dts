@@ -9,6 +9,76 @@
 	compatible = "samsung,gt510", "qcom,msm8916";
 	chassis-type = "tablet";
 
+	battery_sdi: battery {
+		compatible = "simple-battery";
+		device-chemistry = "lithium-ion";
+		charge-full-design-microamp-hours = <6111000>;
+		voltage-max-design-microvolt = <4350000>;
+		over-voltage-threshold-microvolt = <4400000>;
+		re-charge-voltage-microvolt = <4300000>;
+		constant-charge-current-max-microamp = <2200000>;
+		constant-charge-voltage-max-microvolt = <4350000>;
+		charge-term-current-microamp = <300000>;
+		operating-range-celsius = <(-5) 60>;
+		alert-celsius = <0 45>;
+	};
+
+	/* GT510 hardware revisions 3 and later use GPIO2/3. */
+	i2c_max77849: i2c-max77849 {
+		compatible = "i2c-gpio";
+		sda-gpios = <&tlmm 2 (GPIO_ACTIVE_HIGH | GPIO_OPEN_DRAIN)>;
+		scl-gpios = <&tlmm 3 (GPIO_ACTIVE_HIGH | GPIO_OPEN_DRAIN)>;
+		i2c-gpio,delay-us = <2>;
+
+		pinctrl-0 = <&max77849_i2c_default>;
+		pinctrl-names = "default";
+
+		#address-cells = <1>;
+		#size-cells = <0>;
+
+		pmic@66 {
+			compatible = "maxim,max77849";
+			reg = <0x66>;
+			interrupt-parent = <&tlmm>;
+			interrupts = <12 IRQ_TYPE_EDGE_FALLING>;
+			pinctrl-0 = <&max77849_int_default>;
+			pinctrl-names = "default";
+			wakeup-source;
+
+			max77849_charger: charger {
+				compatible = "maxim,max77849-charger";
+				monitored-battery = <&battery_sdi>;
+				maxim,monitored-fuel-gauge = <&fuelgauge>;
+
+				/* Conservative USB profile until MUIC classifies VBUS. */
+				maxim,input-current-limit-microamp = <460000>;
+				maxim,input-current-limit-max-microamp = <1800000>;
+				maxim,charge-current-limit-microamp = <520000>;
+				maxim,cdp-input-current-limit-microamp = <1000000>;
+				maxim,cdp-charge-current-limit-microamp = <1000000>;
+				maxim,dcp-input-current-limit-microamp = <1800000>;
+				maxim,dcp-charge-current-limit-microamp = <2200000>;
+				maxim,otg-current-limit-microamp = <500000>;
+				maxim,min-system-microvolt = <3600000>;
+				maxim,fast-charge-timer-hours = <16>;
+				maxim,topoff-timer-minutes = <70>;
+				maxim,poll-interval-ms = <5000>;
+			};
+
+			muic: extcon {
+				compatible = "maxim,max77849-muic";
+				maxim,charger = <&max77849_charger>;
+				maxim,poll-interval-ms = <1000>;
+
+				connector {
+					compatible = "usb-b-connector";
+					label = "micro-USB";
+					type = "micro";
+				};
+			};
+		};
+	};
+
 	speaker_codec: audio-codec {
 		compatible = "maxim,max98357a";
 		sdmode-gpios = <&tlmm 55 GPIO_ACTIVE_HIGH>;
@@ -124,6 +194,19 @@
 	status = "okay";
 };
 
+&fuelgauge {
+	power-supplies = <&max77849_charger>;
+};
+
+&usb {
+	dr_mode = "otg";
+	extcon = <&muic>, <&muic>;
+};
+
+&usb_hs_phy {
+	extcon = <&muic>;
+};
+
 &mdss {
 	status = "okay";
 };
@@ -190,6 +273,20 @@
 
 	lcd_en_default: lcd-en-default-state {
 		pins = "gpio8";
+		function = "gpio";
+		drive-strength = <2>;
+		bias-disable;
+	};
+
+	max77849_i2c_default: max77849-i2c-default-state {
+		pins = "gpio2", "gpio3";
+		function = "gpio";
+		drive-strength = <2>;
+		bias-disable;
+	};
+
+	max77849_int_default: max77849-int-default-state {
+		pins = "gpio12";
 		function = "gpio";
 		drive-strength = <2>;
 		bias-disable;

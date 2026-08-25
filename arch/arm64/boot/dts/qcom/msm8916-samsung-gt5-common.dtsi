@@ -99,7 +99,7 @@
 &blsp_i2c4 {
 	status = "okay";
 
-	fuelgauge@36 {
+	fuelgauge: fuel-gauge@36 {
 		compatible = "maxim,max77849-battery";
 		reg = <0x36>;
 

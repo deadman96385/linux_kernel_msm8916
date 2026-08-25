@@ -16033,6 +16033,19 @@ S:	Maintained
 F:	Documentation/devicetree/bindings/regulator/maxim,max77838.yaml
 F:	drivers/regulator/max77838-regulator.c
 
+MAXIM MAX77849 PMIC, CHARGER AND MUIC DRIVERS
+M:	Sean Hoyt <seanhoyt963@gmail.com>
+L:	linux-kernel@vger.kernel.org
+L:	linux-pm@vger.kernel.org
+S:	Maintained
+F:	Documentation/devicetree/bindings/extcon/maxim,max77849.yaml
+F:	Documentation/devicetree/bindings/mfd/maxim,max77849.yaml
+F:	Documentation/devicetree/bindings/power/supply/maxim,max77849-charger.yaml
+F:	drivers/extcon/extcon-max77849.c
+F:	drivers/mfd/max77849.c
+F:	drivers/power/supply/max77849_charger.c
+F:	include/linux/mfd/max77849.h
+
 MAXIM MAX77976 BATTERY CHARGER
 M:	Luca Ceresoli <luca@lucaceresoli.net>
 S:	Supported

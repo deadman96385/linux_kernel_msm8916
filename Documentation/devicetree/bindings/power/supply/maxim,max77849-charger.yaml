@@ -1,0 +1,115 @@
+# SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
+%YAML 1.2
+---
+$id: http://devicetree.org/schemas/power/supply/maxim,max77849-charger.yaml#
+$schema: http://devicetree.org/meta-schemas/core.yaml#
+
+title: Maxim MAX77849 Battery Charger
+
+maintainers:
+  - Sean Hoyt <seanhoyt963@gmail.com>
+
+description: |
+  The MAX77849 contains a programmable single-cell Li-ion charger and power
+  path. Battery CC/CV, termination, recharge, and thermal limits are obtained
+  from the simple-battery node referenced by monitored-battery. Until a safe
+  temperature is available from the fuel gauge, the driver inhibits charging.
+
+allOf:
+  - $ref: power-supply.yaml#
+
+properties:
+  compatible:
+    const: maxim,max77849-charger
+
+  monitored-battery: true
+
+  maxim,monitored-fuel-gauge:
+    $ref: /schemas/types.yaml#/definitions/phandle
+    description:
+      Fuel-gauge power supply used for live battery temperature monitoring.
+
+  maxim,input-current-limit-microamp:
+    description:
+      Conservative input current limit used before a source is classified.
+    minimum: 100000
+    maximum: 3175000
+
+  maxim,input-current-limit-max-microamp:
+    description:
+      Board maximum accepted when userspace or a cable detector raises the
+      input current limit.
+    minimum: 100000
+    maximum: 3175000
+
+  maxim,charge-current-limit-microamp:
+    description:
+      Conservative fast-charge current used before a source is classified.
+    minimum: 40000
+    maximum: 2520000
+
+  maxim,cdp-input-current-limit-microamp:
+    description: Input current limit for a BC1.2 charging downstream port.
+    minimum: 100000
+    maximum: 3175000
+
+  maxim,cdp-charge-current-limit-microamp:
+    description: Fast-charge current for a BC1.2 charging downstream port.
+    minimum: 40000
+    maximum: 2520000
+
+  maxim,dcp-input-current-limit-microamp:
+    description: Input current limit for a BC1.2 dedicated charging port.
+    minimum: 100000
+    maximum: 3175000
+
+  maxim,dcp-charge-current-limit-microamp:
+    description: Fast-charge current for a BC1.2 dedicated charging port.
+    minimum: 40000
+    maximum: 2520000
+
+  maxim,otg-current-limit-microamp:
+    description: Output current limit while sourcing VBUS in USB host mode.
+    enum: [500000, 1200000]
+    default: 500000
+
+  maxim,min-system-microvolt:
+    description: Minimum system regulation voltage.
+    enum: [3000000, 3100000, 3200000, 3300000, 3400000, 3500000,
+           3600000, 3700000]
+    default: 3600000
+
+  maxim,fast-charge-timer-hours:
+    $ref: /schemas/types.yaml#/definitions/uint32
+    description:
+      Hardware fast-charge safety timer duration. Zero disables the timer.
+    enum: [0, 4, 6, 8, 10, 12, 14, 16]
+    default: 16
+
+  maxim,topoff-timer-minutes:
+    $ref: /schemas/types.yaml#/definitions/uint32
+    description: Hardware top-off timer duration.
+    enum: [0, 10, 20, 30, 40, 50, 60, 70]
+    default: 70
+
+  maxim,poll-interval-ms:
+    description:
+      Interval for status and fuel-gauge temperature monitoring.
+    minimum: 1000
+    maximum: 60000
+    default: 5000
+
+required:
+  - compatible
+  - monitored-battery
+  - maxim,monitored-fuel-gauge
+  - maxim,input-current-limit-microamp
+  - maxim,input-current-limit-max-microamp
+  - maxim,charge-current-limit-microamp
+  - maxim,cdp-input-current-limit-microamp
+  - maxim,cdp-charge-current-limit-microamp
+  - maxim,dcp-input-current-limit-microamp
+  - maxim,dcp-charge-current-limit-microamp
+
+unevaluatedProperties: false
+...

@@ -1,0 +1,79 @@
+# SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
+%YAML 1.2
+---
+$id: http://devicetree.org/schemas/mfd/maxim,max77849.yaml#
+$schema: http://devicetree.org/meta-schemas/core.yaml#
+
+title: Maxim MAX77849 Companion Power Management IC
+
+maintainers:
+  - Sean Hoyt <seanhoyt963@gmail.com>
+
+description: |
+  The MAX77849 is a companion PMIC containing a single-cell Li-ion charger,
+  system power path, safeout regulators, flash LED control, and a Micro-USB
+  Interface Controller (MUIC). The PMIC/charger register bank is at I2C
+  address 0x66; the MUIC uses a separate I2C address.
+
+properties:
+  compatible:
+    const: maxim,max77849
+
+  reg:
+    maxItems: 1
+
+  interrupts:
+    maxItems: 1
+
+  wakeup-source: true
+
+  charger:
+    $ref: /schemas/power/supply/maxim,max77849-charger.yaml#
+
+  extcon:
+    $ref: /schemas/extcon/maxim,max77849.yaml#
+
+required:
+  - compatible
+  - reg
+  - charger
+  - extcon
+
+additionalProperties: false
+
+examples:
+  - |
+    i2c {
+        #address-cells = <1>;
+        #size-cells = <0>;
+
+        pmic@66 {
+            compatible = "maxim,max77849";
+            reg = <0x66>;
+
+            charger: charger {
+                compatible = "maxim,max77849-charger";
+                monitored-battery = <&battery>;
+                maxim,monitored-fuel-gauge = <&fuel_gauge>;
+                maxim,input-current-limit-microamp = <460000>;
+                maxim,input-current-limit-max-microamp = <1800000>;
+                maxim,charge-current-limit-microamp = <520000>;
+                maxim,cdp-input-current-limit-microamp = <1000000>;
+                maxim,cdp-charge-current-limit-microamp = <1000000>;
+                maxim,dcp-input-current-limit-microamp = <1800000>;
+                maxim,dcp-charge-current-limit-microamp = <2200000>;
+            };
+
+            extcon {
+                compatible = "maxim,max77849-muic";
+                maxim,charger = <&charger>;
+
+                connector {
+                    compatible = "usb-b-connector";
+                    label = "micro-USB";
+                    type = "micro";
+                };
+            };
+        };
+    };
+...

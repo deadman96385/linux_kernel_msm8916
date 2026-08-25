@@ -653,6 +653,16 @@ config CHARGER_MAX77759
 
 	  If built as a module, it will be called max77759_charger.
 
+config CHARGER_MAX77849
+	tristate "Maxim MAX77849 battery charger driver"
+	depends on MFD_MAX77849
+	help
+	  Say Y to enable support for the Maxim MAX77849 battery charger.
+	  The driver exposes standard power-supply charge controls and monitors
+	  the battery fuel-gauge temperature to inhibit unsafe charging.
+	  This driver can also be built as a module. If so, the module will be
+	  called max77849_charger.
+
 config CHARGER_MAX77976
 	tristate "Maxim MAX77976 battery charger driver"
 	depends on I2C

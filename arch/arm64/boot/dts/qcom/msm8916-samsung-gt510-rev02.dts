@@ -1,0 +1,17 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
+/* Samsung downstream revisions 0 through 2 route MAX77849 on GPIO45/46. */
+#include "msm8916-samsung-gt510.dts"
+
+/ {
+	model = "Samsung Galaxy Tab A 9.7 (2015), hardware revision 0-2";
+};
+
+&i2c_max77849 {
+	sda-gpios = <&tlmm 45 (GPIO_ACTIVE_HIGH | GPIO_OPEN_DRAIN)>;
+	scl-gpios = <&tlmm 46 (GPIO_ACTIVE_HIGH | GPIO_OPEN_DRAIN)>;
+};
+
+&max77849_i2c_default {
+	pins = "gpio45", "gpio46";
+};

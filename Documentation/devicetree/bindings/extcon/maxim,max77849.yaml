@@ -1,0 +1,45 @@
+# SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
+%YAML 1.2
+---
+$id: http://devicetree.org/schemas/extcon/maxim,max77849.yaml#
+$schema: http://devicetree.org/meta-schemas/core.yaml#
+
+title: Maxim MAX77849 Micro-USB Interface Controller
+
+maintainers:
+  - Sean Hoyt <seanhoyt963@gmail.com>
+
+description: |
+  The MAX77849 MUIC detects USB host cables and BC1.2 charger types, switches
+  the USB data path, and coordinates the charger boost converter for USB OTG.
+  It is a child of the MAX77849 MFD because the MUIC has a separate I2C address
+  while sharing charger mode control with the parent PMIC.
+
+properties:
+  compatible:
+    const: maxim,max77849-muic
+
+  maxim,charger:
+    $ref: /schemas/types.yaml#/definitions/phandle
+    description:
+      MAX77849 charger power supply that receives detected USB source types.
+
+  maxim,poll-interval-ms:
+    description:
+      Cable detection interval. Polling allows operation on boards whose
+      shared MAX77849 interrupt is unavailable.
+    minimum: 250
+    maximum: 60000
+    default: 1000
+
+  connector:
+    $ref: /schemas/connector/usb-connector.yaml#
+    unevaluatedProperties: false
+
+required:
+  - compatible
+  - maxim,charger
+  - connector
+
+additionalProperties: false
+...
