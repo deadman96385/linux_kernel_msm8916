@@ -180,12 +180,7 @@ static int max77849_restart_to_reg(struct max77849_charger *chg)
 	int delta_uv = chg->charge_voltage_uv - chg->charge_restart_voltage_uv;
 
 	/* The hardware supports 100, 150 or 200 mV below CV. */
-	if (delta_uv <= 100000)
-		return 0;
-	if (delta_uv <= 150000)
-		return 1;
-
-	return 2;
+	return delta_uv / 50000 - 2;
 }
 
 static int max77849_set_input_current(struct max77849_charger *chg, int ua)
@@ -913,7 +908,9 @@ out_put_info:
 	    chg->dcp_profile.charge_ua < MAX77849_CHARGE_CURRENT_MIN_UA ||
 	    chg->dcp_profile.charge_ua > chg->charge_current_max_ua ||
 	    chg->charge_restart_voltage_uv >= chg->charge_voltage_uv ||
+	    chg->charge_voltage_uv - chg->charge_restart_voltage_uv < 100000 ||
 	    chg->charge_voltage_uv - chg->charge_restart_voltage_uv > 200000 ||
+	    (chg->charge_voltage_uv - chg->charge_restart_voltage_uv) % 50000 ||
 	    chg->charge_voltage_uv > chg->overvoltage_limit_uv ||
 	    (chg->otg_current_limit_ua != 500000 &&
 	     chg->otg_current_limit_ua != 1200000) ||

@@ -15,7 +15,7 @@
 		charge-full-design-microamp-hours = <6111000>;
 		voltage-max-design-microvolt = <4350000>;
 		over-voltage-threshold-microvolt = <4400000>;
-		re-charge-voltage-microvolt = <4300000>;
+		re-charge-voltage-microvolt = <4250000>;
 		constant-charge-current-max-microamp = <2200000>;
 		constant-charge-voltage-max-microvolt = <4350000>;
 		charge-term-current-microamp = <300000>;
