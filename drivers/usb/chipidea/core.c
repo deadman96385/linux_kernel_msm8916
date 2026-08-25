@@ -818,6 +818,19 @@ static int ci_extcon_register(struct ci_hdrc *ci)
 			dev_err(ci->dev, "register ID failed\n");
 			return ret;
 		}
+
+		/*
+		 * The state sampled while creating the child device may be stale.
+		 * An extcon provider can become visible and publish its initial
+		 * state while this driver is still probing, before the notifier is
+		 * registered.  Re-read it after registration so that such an event
+		 * is not lost.
+		 */
+		ret = extcon_get_state(id->edev, EXTCON_USB_HOST);
+		if (ret < 0)
+			return ret;
+		id->connected = !!ret;
+		ci_handle_id_switch(ci);
 	}
 
 	vbus = &ci->platdata->vbus_extcon;
@@ -829,6 +842,12 @@ static int ci_extcon_register(struct ci_hdrc *ci)
 			dev_err(ci->dev, "register VBUS failed\n");
 			return ret;
 		}
+
+		ret = extcon_get_state(vbus->edev, EXTCON_USB);
+		if (ret < 0)
+			return ret;
+		vbus->connected = !!ret;
+		ci_handle_vbus_change(ci);
 	}
 
 	return 0;
