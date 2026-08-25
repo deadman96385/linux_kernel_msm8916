@@ -1211,7 +1211,7 @@ static void dsi_wait4video_done(struct msm_dsi_host *msm_host)
 	dsi_intr_ctrl(msm_host, DSI_IRQ_MASK_VIDEO_DONE, 0);
 }
 
-static void dsi_wait4video_eng_busy(struct msm_dsi_host *msm_host)
+static void dsi_wait4video_eng_busy(struct msm_dsi_host *msm_host, int len)
 {
 	u32 data;
 
@@ -1230,8 +1230,14 @@ static void dsi_wait4video_eng_busy(struct msm_dsi_host *msm_host)
 
 	if (msm_host->power_on && msm_host->enabled) {
 		dsi_wait4video_done(msm_host);
-		/* delay 4 ms to skip BLLP */
-		usleep_range(2000, 4000);
+		/*
+		 * A short command fits in the blanking interval. Delaying it
+		 * into the next active frame can starve the video-mode MDP on
+		 * MSM8916 and cause a FIFO underrun. Keep the existing delay for
+		 * larger transfers that may not fit into blanking.
+		 */
+		if (len > 4)
+			usleep_range(2000, 4000);
 	}
 }
 
@@ -1450,7 +1456,7 @@ static int dsi_cmd_dma_tx(struct msm_dsi_host *msm_host, int len)
 
 	reinit_completion(&msm_host->dma_comp);
 
-	dsi_wait4video_eng_busy(msm_host);
+	dsi_wait4video_eng_busy(msm_host, len);
 
 	triggered = msm_dsi_manager_cmd_xfer_trigger(
 						msm_host->id, dma_base, len);
