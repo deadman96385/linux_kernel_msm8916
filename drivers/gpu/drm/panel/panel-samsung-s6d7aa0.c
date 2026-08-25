@@ -160,27 +160,13 @@ static int s6d7aa0_bl_update_status(struct backlight_device *bl)
 	return 0;
 }
 
-static int s6d7aa0_bl_get_brightness(struct backlight_device *bl)
-{
-	struct mipi_dsi_device *dsi = bl_get_data(bl);
-	u8 brightness;
-	ssize_t ret;
-
-	ret = mipi_dsi_dcs_read(dsi, MIPI_DCS_GET_DISPLAY_BRIGHTNESS,
-				&brightness, sizeof(brightness));
-	if (ret <= 0) {
-		if (!ret)
-			ret = -ENODATA;
-
-		return ret;
-	}
-
-	return brightness;
-}
-
+/*
+ * Do not provide get_brightness: DCS reads while the panel is streaming in
+ * video mode disturb the MSM8916 DSI link. The backlight core will report the
+ * cached value instead.
+ */
 static const struct backlight_ops s6d7aa0_bl_ops = {
 	.update_status = s6d7aa0_bl_update_status,
-	.get_brightness = s6d7aa0_bl_get_brightness,
 };
 
 static struct backlight_device *
