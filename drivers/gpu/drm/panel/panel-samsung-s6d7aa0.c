@@ -145,28 +145,58 @@ static int s6d7aa0_unprepare(struct drm_panel *panel)
 
 /* Backlight control code */
 
+static int s6d7aa0_set_brightness(struct mipi_dsi_device *dsi, u8 brightness)
+{
+	const struct mipi_dsi_host_ops *ops = dsi->host->ops;
+	u8 payload[] = { MIPI_DCS_SET_DISPLAY_BRIGHTNESS, brightness };
+	struct mipi_dsi_msg msg = {
+		.channel = dsi->channel,
+		.type = MIPI_DSI_DCS_LONG_WRITE,
+		.tx_buf = payload,
+		.tx_len = sizeof(payload),
+	};
+	ssize_t ret;
+
+	/* Match the downstream 8-bit DCS long-write brightness command. */
+	if (!ops || !ops->transfer)
+		return -EOPNOTSUPP;
+
+	if (dsi->mode_flags & MIPI_DSI_MODE_LPM)
+		msg.flags |= MIPI_DSI_MSG_USE_LPM;
+
+	ret = ops->transfer(dsi->host, &msg);
+	return ret < 0 ? ret : 0;
+}
+
 static int s6d7aa0_bl_update_status(struct backlight_device *bl)
 {
 	struct mipi_dsi_device *dsi = bl_get_data(bl);
-	u16 brightness = backlight_get_brightness(bl);
-	struct mipi_dsi_multi_context dsi_ctx = { .dsi = dsi };
+	u8 brightness = backlight_get_brightness(bl);
+	int ret;
 
-	mipi_dsi_dcs_set_display_brightness_multi(&dsi_ctx, brightness);
+	ret = s6d7aa0_set_brightness(dsi, brightness);
+	if (ret < 0)
+		return ret;
 
-	return dsi_ctx.accum_err;
+	return 0;
 }
 
 static int s6d7aa0_bl_get_brightness(struct backlight_device *bl)
 {
 	struct mipi_dsi_device *dsi = bl_get_data(bl);
-	u16 brightness;
-	int ret;
+	u8 brightness;
+	ssize_t ret;
 
-	ret = mipi_dsi_dcs_get_display_brightness(dsi, &brightness);
-	if (ret < 0)
+	ret = mipi_dsi_dcs_read(dsi, MIPI_DCS_GET_DISPLAY_BRIGHTNESS,
+				&brightness, sizeof(brightness));
+	if (ret <= 0) {
+		if (!ret)
+			ret = -ENODATA;
+
 		return ret;
+	}
 
-	return brightness & 0xff;
+	return brightness;
 }
 
 static const struct backlight_ops s6d7aa0_bl_ops = {
