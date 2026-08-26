@@ -290,6 +290,10 @@ static void s6d7aa0_lsl080al03_init(struct s6d7aa0 *ctx, struct mipi_dsi_multi_c
 
 	mipi_dsi_dcs_write_seq_multi(dsi_ctx, 0xb3, 0x51);
 	mipi_dsi_dcs_write_seq_multi(dsi_ctx, MIPI_DCS_WRITE_CONTROL_DISPLAY, 0x24);
+	if (ctx->desc->panel_type == S6D7AA0_PANEL_LTL101AT01)
+		mipi_dsi_dcs_write_seq_multi(dsi_ctx,
+					     MIPI_DCS_SET_DISPLAY_BRIGHTNESS,
+					     0xff);
 	mipi_dsi_dcs_write_seq_multi(dsi_ctx, 0xf2, 0x02, 0x08, 0x08);
 
 	mipi_dsi_usleep_range(dsi_ctx, 10000, 11000);

@@ -75,6 +75,7 @@ enum lp855x_chip_id {
 	LP8555,
 	LP8556,
 	LP8557,
+	LP8558,
 };
 
 enum lp8550_brighntess_source {
