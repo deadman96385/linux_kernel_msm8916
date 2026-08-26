@@ -12,6 +12,13 @@
 	scl-gpios = <&tlmm 46 (GPIO_ACTIVE_HIGH | GPIO_OPEN_DRAIN)>;
 };
 
+&blsp_i2c5 {
+	touchscreen@4a {
+		/* Downstream revisions 0-2 report keys on T15 bits 1 and 2. */
+		linux,keycodes = <KEY_RESERVED KEY_APPSELECT KEY_BACK>;
+	};
+};
+
 &max77849_i2c_default {
 	pins = "gpio45", "gpio46";
 };
