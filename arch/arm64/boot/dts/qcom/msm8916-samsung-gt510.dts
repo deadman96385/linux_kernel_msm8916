@@ -337,7 +337,7 @@
 		assigned-clocks = <&gcc GCC_CAMSS_MCLK1_CLK>;
 		assigned-clock-rates = <26000000>;
 
-		pinctrl-0 = <&camera_front_default>;
+		pinctrl-0 = <&gt510_camera_front_default>;
 		pinctrl-names = "default";
 
 		reset-gpios = <&tlmm 28 GPIO_ACTIVE_HIGH>;
@@ -430,7 +430,7 @@
 		bias-disable;
 	};
 
-	camera_front_default: camera-front-default-state {
+	gt510_camera_front_default: gt510-camera-front-default-state {
 		control-pins {
 			pins = "gpio28", "gpio32";
 			function = "gpio";
