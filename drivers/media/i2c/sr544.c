@@ -23,7 +23,7 @@
 #include <media/v4l2-subdev.h>
 
 #define SR544_REG_CHIP_ID		CCI_REG16(0x0f16)
-#define SR544_CHIP_ID			0x0544
+#define SR544_CHIP_ID			0x4405
 #define SR544_REG_MODE_SELECT		CCI_REG16(0x0118)
 #define SR544_MODE_STANDBY		0x0000
 #define SR544_MODE_STREAMING		0x0100
