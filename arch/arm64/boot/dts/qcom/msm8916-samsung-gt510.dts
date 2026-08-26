@@ -97,6 +97,7 @@
 			bl-name = "lcd-backlight";
 			dev-ctrl = /bits/ 8 <0x83>;
 			init-brt = /bits/ 8 <0xcd>;
+			power-supply = <&reg_lcd_vmipi>;
 			enable-supply = <&reg_backlight_enable>;
 
 			rom-a5h {
