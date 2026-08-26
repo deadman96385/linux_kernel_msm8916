@@ -904,9 +904,13 @@ static void mxt_proc_t15_messages(struct mxt_data *data, u8 *message)
 	unsigned long keystates = get_unaligned_le32(&message[2]);
 	int key;
 
-	for (key = 0; key < data->t15_num_keys; key++)
+	for (key = 0; key < data->t15_num_keys; key++) {
+		if (data->t15_keymap[key] == KEY_RESERVED)
+			continue;
+
 		input_report_key(input_dev, data->t15_keymap[key],
 				 keystates & BIT(key));
+	}
 
 	data->update_input = true;
 }
@@ -2201,9 +2205,13 @@ static int mxt_initialize_input_device(struct mxt_data *data)
 
 	/* For T15 and T97 Key Array */
 	if (data->T15_reportid_min || data->T97_reportid_min) {
-		for (i = 0; i < data->t15_num_keys; i++)
+		for (i = 0; i < data->t15_num_keys; i++) {
+			if (data->t15_keymap[i] == KEY_RESERVED)
+				continue;
+
 			input_set_capability(input_dev,
 					     EV_KEY, data->t15_keymap[i]);
+		}
 	}
 
 	input_set_drvdata(input_dev, data);
