@@ -857,6 +857,16 @@ config VIDEO_VD56G3
 	  To compile this driver as a module, choose M here: the
 	  module will be called vd56g3.
 
+config VIDEO_SR544
+	tristate "SiliconFile SR544 sensor support"
+	select V4L2_CCI_I2C
+	help
+	  This is a V4L2 sensor-level driver for the SiliconFile SR544
+	  5-megapixel raw camera sensor.
+
+	  To compile this driver as a module, choose M here: the module will
+	  be called sr544.
+
 config VIDEO_VGXY61
 	tristate "ST VGXY61 sensor support"
 	select V4L2_CCI_I2C
