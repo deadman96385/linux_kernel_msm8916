@@ -29,6 +29,23 @@ config GNSS_MTK_SERIAL
 
 	  If unsure, say N.
 
+config GNSS_QCOM_QMI_LOC
+	tristate "Qualcomm QMI LOC GNSS receiver support"
+	depends on NET && QRTR
+	depends on ARCH_QCOM || COMPILE_TEST
+	select QCOM_QMI_HELPERS
+	help
+	  Say Y here to support GNSS receivers provided by the Qualcomm
+	  Location service (QMI LOC version 2) over QRTR. The driver starts
+	  and stops a periodic positioning session when the GNSS character
+	  device is opened and closed, and exposes NMEA data through the
+	  standard GNSS subsystem interface.
+
+	  To compile this driver as a module, choose M here: the module will
+	  be called gnss-qcom-qmi-loc.
+
+	  If unsure, say N.
+
 config GNSS_SIRF_SERIAL
 	tristate "SiRFstar GNSS receiver support"
 	depends on SERIAL_DEV_BUS

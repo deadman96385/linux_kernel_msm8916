@@ -12,6 +12,9 @@ gnss-serial-y := serial.o
 obj-$(CONFIG_GNSS_MTK_SERIAL)		+= gnss-mtk.o
 gnss-mtk-y := mtk.o
 
+obj-$(CONFIG_GNSS_QCOM_QMI_LOC)		+= gnss-qcom-qmi-loc.o
+gnss-qcom-qmi-loc-y := qcom-qmi-loc.o
+
 obj-$(CONFIG_GNSS_SIRF_SERIAL)		+= gnss-sirf.o
 gnss-sirf-y := sirf.o
 
