@@ -67,6 +67,10 @@ properties:
   linux,keycodes:
     minItems: 1
     maxItems: 8
+    description: |
+      Linux keycodes for the T15 key array, ordered by the corresponding
+      bit in the T15 key-state bitmap starting at the least-significant bit.
+      Use KEY_RESERVED for enabled T15 channels that do not represent a key.
 
   atmel,wakeup-method:
     $ref: /schemas/types.yaml#/definitions/uint32
