@@ -311,6 +311,16 @@
 	status = "okay";
 
 	ports {
+		port@0 {
+			reg = <0>;
+
+			csiphy0_ep: endpoint {
+				clock-noncontinuous;
+				data-lanes = <0 2>;
+				remote-endpoint = <&sr544_ep>;
+			};
+		};
+
 		port@1 {
 			reg = <1>;
 
@@ -328,6 +338,37 @@
 };
 
 &cci_i2c0 {
+	camera@28 {
+		compatible = "siliconfile,sr544";
+		reg = <0x28>;
+
+		clocks = <&gcc GCC_CAMSS_MCLK0_CLK>;
+		clock-names = "xclk";
+		assigned-clocks = <&gcc GCC_CAMSS_MCLK0_CLK>;
+		assigned-clock-rates = <26000000>;
+
+		pinctrl-0 = <&gt510_camera_rear_default>;
+		pinctrl-names = "default";
+
+		reset-gpios = <&tlmm 35 GPIO_ACTIVE_HIGH>;
+		standby-gpios = <&tlmm 34 GPIO_ACTIVE_HIGH>;
+
+		vana-supply = <&reg_camera_vana>;
+		vdig-supply = <&reg_camera_vdig>;
+		vio-supply = <&reg_camera_vio>;
+
+		rotation = <90>;
+
+		port {
+			sr544_ep: endpoint {
+				clock-noncontinuous;
+				data-lanes = <1 2>;
+				link-frequencies = /bits/ 64 <440000000>;
+				remote-endpoint = <&csiphy0_ep>;
+			};
+		};
+	};
+
 	camera@20 {
 		compatible = "siliconfile,sr200pc20";
 		reg = <0x20>;
@@ -441,6 +482,22 @@
 		mclk-pins {
 			pins = "gpio27";
 			function = "cam_mclk1";
+			drive-strength = <4>;
+			bias-disable;
+		};
+	};
+
+	gt510_camera_rear_default: gt510-camera-rear-default-state {
+		control-pins {
+			pins = "gpio34", "gpio35";
+			function = "gpio";
+			drive-strength = <2>;
+			bias-disable;
+		};
+
+		mclk-pins {
+			pins = "gpio26";
+			function = "cam_mclk0";
 			drive-strength = <4>;
 			bias-disable;
 		};
