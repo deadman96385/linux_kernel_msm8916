@@ -45,6 +45,8 @@ properties:
   vio-supply:
     description: Digital I/O supply
 
+  lens-focus: true
+
   orientation: true
 
   rotation: true
