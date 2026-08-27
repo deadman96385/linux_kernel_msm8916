@@ -308,12 +308,14 @@ static int __maybe_unused dw9714_vcm_resume(struct device *dev)
 
 static const struct i2c_device_id dw9714_id_table[] = {
 	{ .name = DW9714_NAME },
+	{ .name = "dw9804" },
 	{ }
 };
 MODULE_DEVICE_TABLE(i2c, dw9714_id_table);
 
 static const struct of_device_id dw9714_of_table[] = {
 	{ .compatible = "dongwoon,dw9714" },
+	{ .compatible = "dongwoon,dw9804" },
 	{ { 0 } }
 };
 MODULE_DEVICE_TABLE(of, dw9714_of_table);
@@ -341,5 +343,5 @@ MODULE_AUTHOR("Jian Xu Zheng");
 MODULE_AUTHOR("Yuning Pu");
 MODULE_AUTHOR("Jouni Ukkonen");
 MODULE_AUTHOR("Tommi Franttila");
-MODULE_DESCRIPTION("DW9714 VCM driver");
+MODULE_DESCRIPTION("DW9714 and DW9804 VCM driver");
 MODULE_LICENSE("GPL v2");

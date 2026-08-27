@@ -924,11 +924,11 @@ config VIDEO_AK7375
 	  voice coil motors, controlled via I2C serial interface.
 
 config VIDEO_DW9714
-	tristate "DW9714 lens voice coil support"
+	tristate "DW9714 and DW9804 lens voice coil support"
 	depends on GPIOLIB
 	help
-	  This is a driver for the DW9714 camera lens voice coil.
-	  DW9714 is a 10 bit DAC with 120mA output current sink
+	  This is a driver for the DW9714 and DW9804 camera lens voice coils.
+	  DW9714 and DW9804 are 10 bit DACs with output current sink
 	  capability. This is designed for linear control of
 	  voice coil motors, controlled via I2C serial interface.
 
