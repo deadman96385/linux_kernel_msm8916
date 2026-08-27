@@ -373,6 +373,7 @@
 	dw9804: camera-lens@c {
 		compatible = "dongwoon,dw9804";
 		reg = <0x0c>;
+		iovdd-supply = <&reg_camera_vio>;
 		vcc-supply = <&pm8916_l10>;
 	};
 
