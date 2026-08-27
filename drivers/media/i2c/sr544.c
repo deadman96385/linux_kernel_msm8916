@@ -12,6 +12,7 @@
 #include <linux/gpio/consumer.h>
 #include <linux/i2c.h>
 #include <linux/module.h>
+#include <linux/nvmem-provider.h>
 #include <linux/pm_runtime.h>
 #include <linux/regulator/consumer.h>
 
@@ -44,6 +45,19 @@
 #define SR544_DIGITAL_GAIN_MIN		0x0100
 #define SR544_DIGITAL_GAIN_MAX		0x07ff
 
+#define SR544_REG_OTP_COMMAND		CCI_REG8(0x0102)
+#define SR544_REG_OTP_ADDRESS_H		CCI_REG8(0x010a)
+#define SR544_REG_OTP_ADDRESS_L		CCI_REG8(0x010b)
+#define SR544_REG_OTP_READ_DATA		CCI_REG8(0x0108)
+#define SR544_OTP_COMMAND_READ		0x01
+#define SR544_OTP_BANK_SELECT_ADDRESS	0x0680
+#define SR544_OTP_BANK_0_START		0x0690
+#define SR544_OTP_BANK_1_START		0x0ee0
+#define SR544_OTP_BANK_2_START		0x1730
+#define SR544_OTP_VERSION_ADDRESS	0x0020
+#define SR544_OTP_VERSION_OFFSET	0x0050
+#define SR544_OTP_SIZE			0x0850
+
 #define SR544_XCLK_FREQ			26000000
 #define SR544_XCLK_MIN			25900000
 #define SR544_XCLK_MAX			26100000
@@ -68,8 +82,12 @@ struct sr544 {
 	struct gpio_desc *reset_gpio;
 	struct gpio_desc *standby_gpio;
 	struct v4l2_ctrl *exposure;
+	u8 otp_data[SR544_OTP_SIZE];
+	u8 otp_bank;
+	u8 otp_version;
 
 	s64 link_freq;
+	bool otp_cached;
 	bool streaming;
 };
 
@@ -111,6 +129,187 @@ static const struct cci_reg_sequence sr544_2592x1944_regs[] = {
 	{ CCI_REG16(0x0004), 0x07e0 },
 	{ CCI_REG16(0x0a04), 0x011a },
 };
+
+static const struct cci_reg_sequence sr544_otp_mode_regs[] = {
+	{ CCI_REG8(0x0f02), 0x00 },
+	{ CCI_REG8(0x011a), 0x01 },
+	{ CCI_REG8(0x011b), 0x09 },
+	{ CCI_REG8(0x0d04), 0x01 },
+	{ CCI_REG8(0x0d00), 0x07 },
+	{ CCI_REG8(0x004c), 0x01 },
+	{ CCI_REG8(0x003e), 0x01 },
+};
+
+static int sr544_otp_prepare_read(struct sr544 *sensor, u16 address)
+{
+	int ret = 0;
+
+	/* Match Samsung's byte-wide OTP-mode transition and delays. */
+	cci_write(sensor->regmap, CCI_REG8(0x0118), 0x00, &ret);
+	if (ret)
+		return ret;
+
+	msleep(100);
+	cci_multi_reg_write(sensor->regmap, sr544_otp_mode_regs,
+			    ARRAY_SIZE(sr544_otp_mode_regs), &ret);
+	cci_write(sensor->regmap, CCI_REG8(0x0118), 0x01, &ret);
+	if (ret)
+		return ret;
+
+	msleep(100);
+	cci_write(sensor->regmap, SR544_REG_OTP_ADDRESS_H, address >> 8,
+		  &ret);
+	cci_write(sensor->regmap, SR544_REG_OTP_ADDRESS_L, address & 0xff,
+		  &ret);
+	cci_write(sensor->regmap, SR544_REG_OTP_COMMAND,
+		  SR544_OTP_COMMAND_READ, &ret);
+
+	return ret;
+}
+
+static int sr544_load_otp(struct sr544 *sensor)
+{
+	struct device *dev = sensor->sd.dev;
+	u16 start_address;
+	u64 value;
+	unsigned int i;
+	int stop_ret = 0;
+	int ret = 0;
+
+	/* The OTP controller executes firmware uploaded through the sensor. */
+	cci_multi_reg_write(sensor->regmap, sr544_init_regs,
+			    ARRAY_SIZE(sr544_init_regs), &ret);
+	cci_write(sensor->regmap, SR544_REG_MODE_SELECT,
+		  SR544_MODE_STREAMING, &ret);
+	if (ret)
+		return ret;
+
+	msleep(100);
+	ret = sr544_otp_prepare_read(sensor, SR544_OTP_VERSION_ADDRESS);
+	if (ret)
+		goto stop_sensor;
+
+	cci_read(sensor->regmap, SR544_REG_OTP_READ_DATA, &value, &ret);
+	if (ret)
+		goto stop_sensor;
+	sensor->otp_version = value;
+
+	ret = sr544_otp_prepare_read(sensor, SR544_OTP_BANK_SELECT_ADDRESS);
+	if (ret)
+		goto stop_sensor;
+
+	cci_read(sensor->regmap, SR544_REG_OTP_READ_DATA, &value, &ret);
+	if (ret)
+		goto stop_sensor;
+	sensor->otp_bank = value;
+
+	switch (sensor->otp_bank) {
+	case 0:
+	case 1:
+		start_address = SR544_OTP_BANK_0_START;
+		break;
+	case 3:
+		start_address = SR544_OTP_BANK_1_START;
+		break;
+	case 7:
+		start_address = SR544_OTP_BANK_2_START;
+		break;
+	default:
+		ret = dev_err_probe(dev, -EINVAL,
+				    "unsupported OTP bank marker 0x%02x\n",
+				    sensor->otp_bank);
+		goto stop_sensor;
+	}
+
+	cci_write(sensor->regmap, SR544_REG_OTP_ADDRESS_H,
+		  start_address >> 8, &ret);
+	cci_write(sensor->regmap, SR544_REG_OTP_ADDRESS_L,
+		  start_address & 0xff, &ret);
+	cci_write(sensor->regmap, SR544_REG_OTP_COMMAND,
+		  SR544_OTP_COMMAND_READ, &ret);
+	if (ret)
+		goto stop_sensor;
+
+	for (i = 0; i < SR544_OTP_SIZE; i++) {
+		cci_read(sensor->regmap, SR544_REG_OTP_READ_DATA, &value,
+			 &ret);
+		if (ret)
+			goto stop_sensor;
+		sensor->otp_data[i] = value;
+	}
+
+	/* Preserve the layout exported by Samsung's downstream driver. */
+	sensor->otp_data[SR544_OTP_VERSION_OFFSET] = sensor->otp_version;
+	sensor->otp_cached = true;
+	dev_info(dev, "cached 0x%x OTP bytes from bank 0x%02x (version 0x%02x)\n",
+		 SR544_OTP_SIZE, sensor->otp_bank, sensor->otp_version);
+
+stop_sensor:
+	cci_write(sensor->regmap, SR544_REG_MODE_SELECT,
+		  SR544_MODE_STANDBY, &stop_ret);
+	if (stop_ret)
+		dev_warn(dev, "failed to leave OTP mode: %d\n", stop_ret);
+
+	return ret;
+}
+
+static int sr544_nvmem_read(void *priv, unsigned int offset, void *val,
+			    size_t bytes)
+{
+	struct sr544 *sensor = priv;
+	struct device *dev = sensor->sd.dev;
+	struct v4l2_subdev_state *state;
+	int ret = 0;
+
+	if (offset >= SR544_OTP_SIZE || bytes > SR544_OTP_SIZE - offset)
+		return -EINVAL;
+
+	state = v4l2_subdev_lock_and_get_active_state(&sensor->sd);
+	if (!sensor->otp_cached) {
+		if (sensor->streaming) {
+			ret = -EBUSY;
+			goto unlock;
+		}
+
+		ret = pm_runtime_resume_and_get(dev);
+		if (ret < 0)
+			goto unlock;
+
+		ret = sr544_load_otp(sensor);
+		pm_runtime_mark_last_busy(dev);
+		pm_runtime_put_autosuspend(dev);
+		if (ret)
+			goto unlock;
+	}
+
+	memcpy(val, sensor->otp_data + offset, bytes);
+
+unlock:
+	v4l2_subdev_unlock_state(state);
+	return ret;
+}
+
+static int sr544_register_nvmem(struct sr544 *sensor)
+{
+	struct nvmem_config config = {
+		.dev = sensor->sd.dev,
+		.name = "sr544-otp",
+		.id = NVMEM_DEVID_NONE,
+		.owner = THIS_MODULE,
+		.type = NVMEM_TYPE_OTP,
+		.read_only = true,
+		.root_only = true,
+		.reg_read = sr544_nvmem_read,
+		.priv = sensor,
+		.size = SR544_OTP_SIZE,
+		.word_size = 1,
+		.stride = 1,
+	};
+	struct nvmem_device *nvmem;
+
+	nvmem = devm_nvmem_register(sensor->sd.dev, &config);
+	return PTR_ERR_OR_ZERO(nvmem);
+}
 
 static void sr544_fill_format(struct v4l2_mbus_framefmt *fmt)
 {
@@ -616,6 +815,10 @@ static int sr544_probe(struct i2c_client *client)
 	pm_runtime_set_autosuspend_delay(dev, 1000);
 	pm_runtime_use_autosuspend(dev);
 	pm_runtime_put_autosuspend(dev);
+
+	ret = sr544_register_nvmem(sensor);
+	if (ret)
+		goto cleanup_subdev;
 
 	ret = v4l2_async_register_subdev_sensor(&sensor->sd);
 	if (ret)

@@ -859,6 +859,7 @@ config VIDEO_VD56G3
 
 config VIDEO_SR544
 	tristate "SiliconFile SR544 sensor support"
+	select NVMEM
 	select V4L2_CCI_I2C
 	help
 	  This is a V4L2 sensor-level driver for the SiliconFile SR544
