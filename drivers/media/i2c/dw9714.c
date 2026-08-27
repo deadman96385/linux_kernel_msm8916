@@ -33,11 +33,16 @@
 #define DW9714_DEFAULT_S 0x0
 #define DW9714_VAL(data, s) ((data) << 4 | (s))
 
-#define DW9804_DAC_LSB_REG 0x03
-#define DW9804_DAC_MSB_REG 0x04
+#define DW9804_DAC_MSB_REG	0x03
+#define DW9804_DAC_LSB_REG	0x04
+#define DW9804_INITIAL_CODE	170
+#define DW9804_CODE_PER_STEP	2
+#define DW9804_MAX_FOCUS_POS	350
 
 struct dw9714_chip_info {
+	int (*init)(struct i2c_client *client);
 	int (*write_dac)(struct i2c_client *client, u16 data);
+	u16 max_focus_pos;
 };
 
 /* dw9714 device structure */
@@ -82,26 +87,78 @@ static int dw9714_write_dac(struct i2c_client *client, u16 data)
 	return dw9714_i2c_send(client, &val, sizeof(val));
 }
 
+struct dw9804_reg {
+	u8 address;
+	u8 value;
+};
+
+static const struct dw9804_reg dw9804_init_regs[] = {
+	{ 0x02, 0x01 },
+	{ 0xdd, 0xd0 },
+	{ 0x03, 0x00 },
+	{ 0x04, 0x96 },
+	{ 0x03, 0x00 },
+	{ 0x04, 0xaa },
+	{ 0x03, 0x00 },
+	{ 0x04, 0xbe },
+	{ 0x03, 0x00 },
+	{ 0x04, 0xd2 },
+	{ 0x03, 0x00 },
+	{ 0x04, 0xe6 },
+	{ 0x03, 0x00 },
+	{ 0x04, 0xfa },
+	{ 0x03, 0x01 },
+	{ 0x04, 0x0e },
+	{ 0x03, 0x01 },
+	{ 0x04, 0x22 },
+	{ 0x03, 0x01 },
+	{ 0x04, 0x36 },
+	{ 0x06, 0x40 },
+	{ 0x07, 0x6d },
+	{ 0x02, 0x02 },
+};
+
+static int dw9804_init(struct i2c_client *client)
+{
+	u8 command[2];
+	unsigned int i;
+	int ret;
+
+	for (i = 0; i < ARRAY_SIZE(dw9804_init_regs); i++) {
+		command[0] = dw9804_init_regs[i].address;
+		command[1] = dw9804_init_regs[i].value;
+		ret = dw9714_i2c_send(client, command, sizeof(command));
+		if (ret)
+			return ret;
+	}
+
+	return 0;
+}
+
 static int dw9804_write_dac(struct i2c_client *client, u16 data)
 {
-	u8 command[2] = { DW9804_DAC_LSB_REG, data & 0xff };
+	u16 code = DW9804_INITIAL_CODE + data * DW9804_CODE_PER_STEP;
+	u8 command[2] = { DW9804_DAC_MSB_REG, (code >> 8) & 0x03 };
 	int ret;
 
 	ret = dw9714_i2c_send(client, command, sizeof(command));
 	if (ret)
 		return ret;
 
-	command[0] = DW9804_DAC_MSB_REG;
-	command[1] = (data >> 8) & 0x03;
+	command[0] = DW9804_DAC_LSB_REG;
+	command[1] = code & 0xff;
 	return dw9714_i2c_send(client, command, sizeof(command));
 }
 
 static const struct dw9714_chip_info dw9714_chip = {
 	.write_dac = dw9714_write_dac,
+	.max_focus_pos = DW9714_MAX_FOCUS_POS,
 };
 
 static const struct dw9714_chip_info dw9804_chip = {
+	.init = dw9804_init,
 	.write_dac = dw9804_write_dac,
+	.max_focus_pos = DW9804_MAX_FOCUS_POS,
 };
 
 static int dw9714_t_focus_vcm(struct dw9714_device *dw9714_dev, u16 val)
@@ -169,7 +226,8 @@ static int dw9714_init_controls(struct dw9714_device *dev_vcm)
 	v4l2_ctrl_handler_init(hdl, 1);
 
 	v4l2_ctrl_new_std(hdl, ops, V4L2_CID_FOCUS_ABSOLUTE,
-			  0, DW9714_MAX_FOCUS_POS, DW9714_FOCUS_STEPS, 0);
+			  0, dev_vcm->chip->max_focus_pos,
+			  DW9714_FOCUS_STEPS, 0);
 
 	if (hdl->error)
 		dev_err(dev_vcm->sd.dev, "%s fail error: 0x%x\n",
@@ -178,7 +236,8 @@ static int dw9714_init_controls(struct dw9714_device *dev_vcm)
 	return hdl->error;
 }
 
-static int dw9714_power_up(struct dw9714_device *dw9714_dev)
+static int dw9714_power_up(struct dw9714_device *dw9714_dev,
+			   struct i2c_client *client)
 {
 	int ret;
 
@@ -199,7 +258,20 @@ static int dw9714_power_up(struct dw9714_device *dw9714_dev)
 
 	usleep_range(12000, 14000);
 
+	if (dw9714_dev->chip->init) {
+		ret = dw9714_dev->chip->init(client);
+		if (ret)
+			goto disable_supplies;
+	}
+
 	return 0;
+
+disable_supplies:
+	gpiod_set_value_cansleep(dw9714_dev->powerdown_gpio, 1);
+	regulator_disable(dw9714_dev->vcc);
+	if (dw9714_dev->iovdd)
+		regulator_disable(dw9714_dev->iovdd);
+	return ret;
 }
 
 static int dw9714_power_down(struct dw9714_device *dw9714_dev)
@@ -250,7 +322,7 @@ static int dw9714_probe(struct i2c_client *client)
 				     PTR_ERR(dw9714_dev->powerdown_gpio),
 				     "could not get powerdown gpio\n");
 
-	rval = dw9714_power_up(dw9714_dev);
+	rval = dw9714_power_up(dw9714_dev, client);
 	if (rval)
 		return dev_err_probe(&client->dev, rval,
 				     "failed to enable supplies: %d\n", rval);
@@ -352,7 +424,7 @@ static int __maybe_unused dw9714_vcm_resume(struct device *dev)
 	if (pm_runtime_suspended(&client->dev))
 		return 0;
 
-	ret = dw9714_power_up(dw9714_dev);
+	ret = dw9714_power_up(dw9714_dev, client);
 	if (ret) {
 		dev_err(dev, "Failed to enable supplies: %d\n", ret);
 		return ret;
