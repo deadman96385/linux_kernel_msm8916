@@ -29,6 +29,9 @@ properties:
   vcc-supply:
     description: VDD power supply
 
+  iovdd-supply:
+    description: Optional supply for the I2C bus pull-ups
+
 required:
   - compatible
   - reg
