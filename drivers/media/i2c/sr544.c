@@ -28,6 +28,22 @@
 #define SR544_MODE_STANDBY		0x0000
 #define SR544_MODE_STREAMING		0x0100
 
+#define SR544_REG_FRAME_LENGTH		CCI_REG16(0x0006)
+#define SR544_FRAME_LENGTH_MAX		0xffff
+#define SR544_REG_EXPOSURE		CCI_REG16(0x0004)
+#define SR544_EXPOSURE_MIN		4
+#define SR544_EXPOSURE_MARGIN		4
+#define SR544_EXPOSURE_DEFAULT		0x07e0
+#define SR544_REG_ANALOGUE_GAIN		CCI_REG16(0x003a)
+#define SR544_ANALOGUE_GAIN_MIN		0x00
+#define SR544_ANALOGUE_GAIN_MAX		0xf0
+#define SR544_REG_DIGITAL_GAIN_GR	CCI_REG16(0x0508)
+#define SR544_REG_DIGITAL_GAIN_GB	CCI_REG16(0x050a)
+#define SR544_REG_DIGITAL_GAIN_R	CCI_REG16(0x050c)
+#define SR544_REG_DIGITAL_GAIN_B	CCI_REG16(0x050e)
+#define SR544_DIGITAL_GAIN_MIN		0x0100
+#define SR544_DIGITAL_GAIN_MAX		0x07ff
+
 #define SR544_XCLK_FREQ			26000000
 #define SR544_XCLK_MIN			25900000
 #define SR544_XCLK_MAX			26100000
@@ -35,6 +51,9 @@
 #define SR544_PIXEL_RATE		176000000
 #define SR544_WIDTH			2592
 #define SR544_HEIGHT			1944
+#define SR544_LINE_LENGTH		2880
+#define SR544_FRAME_LENGTH_DEFAULT	(SR544_EXPOSURE_DEFAULT + \
+					 SR544_EXPOSURE_MARGIN)
 
 struct sr544 {
 	struct v4l2_subdev sd;
@@ -48,6 +67,7 @@ struct sr544 {
 	struct regulator *vio;
 	struct gpio_desc *reset_gpio;
 	struct gpio_desc *standby_gpio;
+	struct v4l2_ctrl *exposure;
 
 	s64 link_freq;
 	bool streaming;
@@ -173,6 +193,13 @@ static int sr544_start_streaming(struct sr544 *sensor)
 			    ARRAY_SIZE(sr544_2592x1944_regs), &ret);
 	if (ret) {
 		dev_err(dev, "failed to program native mode: %d\n", ret);
+		goto power_down;
+	}
+
+	/* Restore all user controls after the mode table overwrote them. */
+	ret = __v4l2_ctrl_handler_setup(&sensor->ctrls);
+	if (ret) {
+		dev_err(dev, "failed to apply controls: %d\n", ret);
 		goto power_down;
 	}
 
@@ -377,26 +404,117 @@ free_endpoint:
 	return ret;
 }
 
+static int sr544_set_ctrl(struct v4l2_ctrl *ctrl)
+{
+	struct sr544 *sensor = container_of(ctrl->handler, struct sr544,
+					    ctrls);
+	struct device *dev = sensor->sd.dev;
+	s64 exposure_max;
+	int ret;
+
+	/* Keep the exposure range inside the requested frame length. */
+	if (ctrl->id == V4L2_CID_VBLANK) {
+		exposure_max = SR544_HEIGHT + ctrl->val -
+			       SR544_EXPOSURE_MARGIN;
+		__v4l2_ctrl_modify_range(sensor->exposure,
+					 sensor->exposure->minimum,
+					 exposure_max,
+					 sensor->exposure->step,
+					 min_t(s64, sensor->exposure->default_value,
+					       exposure_max));
+	}
+
+	ret = pm_runtime_get_if_in_use(dev);
+	if (ret <= 0)
+		return ret < 0 ? ret : 0;
+
+	ret = 0;
+	switch (ctrl->id) {
+	case V4L2_CID_EXPOSURE:
+		cci_write(sensor->regmap, SR544_REG_EXPOSURE, ctrl->val, &ret);
+		break;
+	case V4L2_CID_ANALOGUE_GAIN:
+		cci_write(sensor->regmap, SR544_REG_ANALOGUE_GAIN,
+			  ctrl->val, &ret);
+		break;
+	case V4L2_CID_DIGITAL_GAIN:
+		cci_write(sensor->regmap, SR544_REG_DIGITAL_GAIN_GR,
+			  ctrl->val, &ret);
+		cci_write(sensor->regmap, SR544_REG_DIGITAL_GAIN_GB,
+			  ctrl->val, &ret);
+		cci_write(sensor->regmap, SR544_REG_DIGITAL_GAIN_R,
+			  ctrl->val, &ret);
+		cci_write(sensor->regmap, SR544_REG_DIGITAL_GAIN_B,
+			  ctrl->val, &ret);
+		break;
+	case V4L2_CID_VBLANK:
+		cci_write(sensor->regmap, SR544_REG_FRAME_LENGTH,
+			  SR544_HEIGHT + ctrl->val, &ret);
+		break;
+	default:
+		ret = -EINVAL;
+		break;
+	}
+
+	pm_runtime_put(dev);
+	return ret;
+}
+
+static const struct v4l2_ctrl_ops sr544_ctrl_ops = {
+	.s_ctrl = sr544_set_ctrl,
+};
+
 static int sr544_init_controls(struct sr544 *sensor)
 {
 	struct v4l2_ctrl *ctrl;
+	s64 exposure_max;
+	s64 hblank;
+	s64 vblank_default;
 	int ret;
 
-	ret = v4l2_ctrl_handler_init(&sensor->ctrls, 2);
+	ret = v4l2_ctrl_handler_init(&sensor->ctrls, 7);
 	if (ret)
 		return ret;
 
-	ctrl = v4l2_ctrl_new_int_menu(&sensor->ctrls, NULL,
+	ctrl = v4l2_ctrl_new_int_menu(&sensor->ctrls, &sr544_ctrl_ops,
 				      V4L2_CID_LINK_FREQ, 0, 0,
 				      &sensor->link_freq);
 	if (ctrl)
 		ctrl->flags |= V4L2_CTRL_FLAG_READ_ONLY;
 
-	ctrl = v4l2_ctrl_new_std(&sensor->ctrls, NULL, V4L2_CID_PIXEL_RATE,
+	ctrl = v4l2_ctrl_new_std(&sensor->ctrls, &sr544_ctrl_ops,
+				 V4L2_CID_PIXEL_RATE,
 				 SR544_PIXEL_RATE, SR544_PIXEL_RATE,
 				 1, SR544_PIXEL_RATE);
 	if (ctrl)
 		ctrl->flags |= V4L2_CTRL_FLAG_READ_ONLY;
+
+	vblank_default = SR544_FRAME_LENGTH_DEFAULT - SR544_HEIGHT;
+	v4l2_ctrl_new_std(&sensor->ctrls, &sr544_ctrl_ops, V4L2_CID_VBLANK,
+			  vblank_default,
+			  SR544_FRAME_LENGTH_MAX - SR544_HEIGHT, 1,
+			  vblank_default);
+
+	hblank = SR544_LINE_LENGTH - SR544_WIDTH;
+	ctrl = v4l2_ctrl_new_std(&sensor->ctrls, &sr544_ctrl_ops,
+				 V4L2_CID_HBLANK, hblank, hblank, 1, hblank);
+	if (ctrl)
+		ctrl->flags |= V4L2_CTRL_FLAG_READ_ONLY;
+
+	exposure_max = SR544_FRAME_LENGTH_DEFAULT - SR544_EXPOSURE_MARGIN;
+	sensor->exposure = v4l2_ctrl_new_std(&sensor->ctrls, &sr544_ctrl_ops,
+					     V4L2_CID_EXPOSURE,
+					     SR544_EXPOSURE_MIN,
+					     exposure_max, 1,
+					     SR544_EXPOSURE_DEFAULT);
+	v4l2_ctrl_new_std(&sensor->ctrls, &sr544_ctrl_ops,
+			  V4L2_CID_ANALOGUE_GAIN,
+			  SR544_ANALOGUE_GAIN_MIN, SR544_ANALOGUE_GAIN_MAX,
+			  1, SR544_ANALOGUE_GAIN_MIN);
+	v4l2_ctrl_new_std(&sensor->ctrls, &sr544_ctrl_ops,
+			  V4L2_CID_DIGITAL_GAIN,
+			  SR544_DIGITAL_GAIN_MIN, SR544_DIGITAL_GAIN_MAX,
+			  1, SR544_DIGITAL_GAIN_MIN);
 
 	if (sensor->ctrls.error) {
 		ret = sensor->ctrls.error;
