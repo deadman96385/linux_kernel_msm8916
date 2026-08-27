@@ -445,6 +445,8 @@ static int sr544_enum_frame_size(struct v4l2_subdev *sd,
 static int sr544_update_mode_controls(struct sr544 *sensor,
 				      const struct sr544_mode *mode)
 {
+	s64 exposure_default = min_t(s64, SR544_EXPOSURE_DEFAULT,
+				     mode->frame_length - SR544_EXPOSURE_MARGIN);
 	s64 hblank = mode->line_length - mode->width;
 	s64 vblank = mode->frame_length - mode->height;
 	int ret;
@@ -458,8 +460,12 @@ static int sr544_update_mode_controls(struct sr544 *sensor,
 	if (ret)
 		return ret;
 
-	return __v4l2_ctrl_modify_range(sensor->hblank, hblank, hblank,
-					1, hblank);
+	ret = __v4l2_ctrl_modify_range(sensor->hblank, hblank, hblank,
+				       1, hblank);
+	if (ret)
+		return ret;
+
+	return __v4l2_ctrl_s_ctrl(sensor->exposure, exposure_default);
 }
 
 static int sr544_set_format(struct v4l2_subdev *sd,
@@ -756,7 +762,9 @@ static int sr544_set_ctrl(struct v4l2_ctrl *ctrl)
 					 sensor->exposure->minimum,
 					 exposure_max,
 					 sensor->exposure->step,
-					 min_t(s64, sensor->exposure->default_value,
+					 min_t(s64,
+					       sensor->cur_mode->frame_length -
+					       SR544_EXPOSURE_MARGIN,
 					       exposure_max));
 	}
 
