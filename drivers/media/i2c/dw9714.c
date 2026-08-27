@@ -33,6 +33,13 @@
 #define DW9714_DEFAULT_S 0x0
 #define DW9714_VAL(data, s) ((data) << 4 | (s))
 
+#define DW9804_DAC_LSB_REG 0x03
+#define DW9804_DAC_MSB_REG 0x04
+
+struct dw9714_chip_info {
+	int (*write_dac)(struct i2c_client *client, u16 data);
+};
+
 /* dw9714 device structure */
 struct dw9714_device {
 	struct v4l2_ctrl_handler ctrls_vcm;
@@ -41,6 +48,7 @@ struct dw9714_device {
 	struct regulator *vcc;
 	struct regulator *iovdd;
 	struct gpio_desc *powerdown_gpio;
+	const struct dw9714_chip_info *chip;
 };
 
 static inline struct dw9714_device *to_dw9714_vcm(struct v4l2_ctrl *ctrl)
@@ -53,18 +61,48 @@ static inline struct dw9714_device *sd_to_dw9714_vcm(struct v4l2_subdev *subdev)
 	return container_of(subdev, struct dw9714_device, sd);
 }
 
-static int dw9714_i2c_write(struct i2c_client *client, u16 data)
+static int dw9714_i2c_send(struct i2c_client *client, const void *data,
+			   size_t size)
 {
 	int ret;
-	__be16 val = cpu_to_be16(data);
 
-	ret = i2c_master_send(client, (const char *)&val, sizeof(val));
-	if (ret != sizeof(val)) {
+	ret = i2c_master_send(client, data, size);
+	if (ret != (int)size) {
 		dev_err(&client->dev, "I2C write fail\n");
-		return -EIO;
+		return ret < 0 ? ret : -EIO;
 	}
+
 	return 0;
 }
+
+static int dw9714_write_dac(struct i2c_client *client, u16 data)
+{
+	__be16 val = cpu_to_be16(DW9714_VAL(data, DW9714_DEFAULT_S));
+
+	return dw9714_i2c_send(client, &val, sizeof(val));
+}
+
+static int dw9804_write_dac(struct i2c_client *client, u16 data)
+{
+	u8 command[2] = { DW9804_DAC_LSB_REG, data & 0xff };
+	int ret;
+
+	ret = dw9714_i2c_send(client, command, sizeof(command));
+	if (ret)
+		return ret;
+
+	command[0] = DW9804_DAC_MSB_REG;
+	command[1] = (data >> 8) & 0x03;
+	return dw9714_i2c_send(client, command, sizeof(command));
+}
+
+static const struct dw9714_chip_info dw9714_chip = {
+	.write_dac = dw9714_write_dac,
+};
+
+static const struct dw9714_chip_info dw9804_chip = {
+	.write_dac = dw9804_write_dac,
+};
 
 static int dw9714_t_focus_vcm(struct dw9714_device *dw9714_dev, u16 val)
 {
@@ -72,7 +110,7 @@ static int dw9714_t_focus_vcm(struct dw9714_device *dw9714_dev, u16 val)
 
 	dw9714_dev->current_val = val;
 
-	return dw9714_i2c_write(client, DW9714_VAL(val, DW9714_DEFAULT_S));
+	return dw9714_dev->chip->write_dac(client, val);
 }
 
 static int dw9714_set_ctrl(struct v4l2_ctrl *ctrl)
@@ -188,6 +226,10 @@ static int dw9714_probe(struct i2c_client *client)
 	if (!dw9714_dev)
 		return -ENOMEM;
 
+	dw9714_dev->chip = i2c_get_match_data(client);
+	if (!dw9714_dev->chip)
+		return -EINVAL;
+
 	dw9714_dev->vcc = devm_regulator_get(&client->dev, "vcc");
 	if (IS_ERR(dw9714_dev->vcc))
 		return PTR_ERR(dw9714_dev->vcc);
@@ -281,8 +323,7 @@ static int __maybe_unused dw9714_vcm_suspend(struct device *dev)
 
 	for (val = dw9714_dev->current_val & ~(DW9714_CTRL_STEPS - 1);
 	     val >= 0; val -= DW9714_CTRL_STEPS) {
-		ret = dw9714_i2c_write(client,
-				       DW9714_VAL(val, DW9714_DEFAULT_S));
+		ret = dw9714_dev->chip->write_dac(client, val);
 		if (ret)
 			dev_err_once(dev, "%s I2C failure: %d", __func__, ret);
 		usleep_range(DW9714_CTRL_DELAY_US, DW9714_CTRL_DELAY_US + 10);
@@ -320,8 +361,7 @@ static int __maybe_unused dw9714_vcm_resume(struct device *dev)
 	for (val = dw9714_dev->current_val % DW9714_CTRL_STEPS;
 	     val < dw9714_dev->current_val + DW9714_CTRL_STEPS - 1;
 	     val += DW9714_CTRL_STEPS) {
-		ret = dw9714_i2c_write(client,
-				       DW9714_VAL(val, DW9714_DEFAULT_S));
+		ret = dw9714_dev->chip->write_dac(client, val);
 		if (ret)
 			dev_err_ratelimited(dev, "%s I2C failure: %d",
 					    __func__, ret);
@@ -332,15 +372,17 @@ static int __maybe_unused dw9714_vcm_resume(struct device *dev)
 }
 
 static const struct i2c_device_id dw9714_id_table[] = {
-	{ .name = DW9714_NAME },
-	{ .name = "dw9804" },
+	{ .name = DW9714_NAME,
+	  .driver_data = (kernel_ulong_t)&dw9714_chip },
+	{ .name = "dw9804",
+	  .driver_data = (kernel_ulong_t)&dw9804_chip },
 	{ }
 };
 MODULE_DEVICE_TABLE(i2c, dw9714_id_table);
 
 static const struct of_device_id dw9714_of_table[] = {
-	{ .compatible = "dongwoon,dw9714" },
-	{ .compatible = "dongwoon,dw9804" },
+	{ .compatible = "dongwoon,dw9714", .data = &dw9714_chip },
+	{ .compatible = "dongwoon,dw9804", .data = &dw9804_chip },
 	{ { 0 } }
 };
 MODULE_DEVICE_TABLE(of, dw9714_of_table);
