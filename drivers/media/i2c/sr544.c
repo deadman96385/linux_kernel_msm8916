@@ -17,6 +17,7 @@
 #include <linux/regulator/consumer.h>
 
 #include <media/v4l2-cci.h>
+#include <media/v4l2-common.h>
 #include <media/v4l2-ctrls.h>
 #include <media/v4l2-device.h>
 #include <media/v4l2-fwnode.h>
@@ -63,11 +64,15 @@
 #define SR544_XCLK_MAX			26100000
 #define SR544_LINK_FREQ			440000000
 #define SR544_PIXEL_RATE		176000000
-#define SR544_WIDTH			2592
-#define SR544_HEIGHT			1944
-#define SR544_LINE_LENGTH		2880
-#define SR544_FRAME_LENGTH_DEFAULT	(SR544_EXPOSURE_DEFAULT + \
-					 SR544_EXPOSURE_MARGIN)
+
+struct sr544_mode {
+	u32 width;
+	u32 height;
+	u32 line_length;
+	u32 frame_length;
+	const struct cci_reg_sequence *reg_list;
+	unsigned int num_regs;
+};
 
 struct sr544 {
 	struct v4l2_subdev sd;
@@ -81,6 +86,9 @@ struct sr544 {
 	struct regulator *vio;
 	struct gpio_desc *reset_gpio;
 	struct gpio_desc *standby_gpio;
+	const struct sr544_mode *cur_mode;
+	struct v4l2_ctrl *hblank;
+	struct v4l2_ctrl *vblank;
 	struct v4l2_ctrl *exposure;
 	u8 otp_data[SR544_OTP_SIZE];
 	u8 otp_bank;
@@ -128,6 +136,90 @@ static const struct cci_reg_sequence sr544_2592x1944_regs[] = {
 	{ CCI_REG16(0x0002), 0x0539 },
 	{ CCI_REG16(0x0004), 0x07e0 },
 	{ CCI_REG16(0x0a04), 0x011a },
+};
+
+static const struct cci_reg_sequence sr544_2592x1458_regs[] = {
+	{ CCI_REG16(0x0b02), 0x0014 },
+	{ CCI_REG16(0x0b04), 0x07c8 },
+	{ CCI_REG16(0x0b06), 0x5ed7 },
+	{ CCI_REG16(0x0b14), 0x5313 },
+	{ CCI_REG16(0x0b16), 0x4a0b },
+	{ CCI_REG16(0x0b18), 0x0000 },
+	{ CCI_REG16(0x0b1a), 0x1044 },
+	{ CCI_REG16(0x0012), 0x00aa },
+	{ CCI_REG16(0x0018), 0x0acb },
+	{ CCI_REG16(0x0026), 0x010c },
+	{ CCI_REG16(0x002c), 0x06bd },
+	{ CCI_REG16(0x0128), 0x0002 },
+	{ CCI_REG16(0x012a), 0x0000 },
+	{ CCI_REG16(0x012c), 0x0a20 },
+	{ CCI_REG16(0x012e), 0x05b2 },
+	{ CCI_REG16(0x0110), 0x0a20 },
+	{ CCI_REG16(0x0112), 0x05b2 },
+	{ CCI_REG16(0x0006), 0x07c0 },
+	{ CCI_REG16(0x0008), 0x0b40 },
+	{ CCI_REG16(0x000a), 0x0db0 },
+	{ CCI_REG16(0x0700), 0x0590 },
+	{ CCI_REG16(0x001e), 0x0101 },
+	{ CCI_REG16(0x0032), 0x0101 },
+	{ CCI_REG16(0x0a02), 0x0100 },
+	{ CCI_REG16(0x0a04), 0x011a },
+};
+
+static const struct cci_reg_sequence sr544_648x488_regs[] = {
+	{ CCI_REG16(0x0b02), 0x0014 },
+	{ CCI_REG16(0x0b04), 0x07c8 },
+	{ CCI_REG16(0x0b06), 0x5ed7 },
+	{ CCI_REG16(0x0b14), 0x5313 },
+	{ CCI_REG16(0x0b16), 0x4a0b },
+	{ CCI_REG16(0x0b18), 0x0000 },
+	{ CCI_REG16(0x0b1a), 0x1044 },
+	{ CCI_REG16(0x0012), 0x00aa },
+	{ CCI_REG16(0x0018), 0x0acd },
+	{ CCI_REG16(0x0026), 0x0012 },
+	{ CCI_REG16(0x002c), 0x07b1 },
+	{ CCI_REG16(0x0128), 0x0002 },
+	{ CCI_REG16(0x012a), 0x0000 },
+	{ CCI_REG16(0x012c), 0x0510 },
+	{ CCI_REG16(0x012e), 0x01e8 },
+	{ CCI_REG16(0x0110), 0x0288 },
+	{ CCI_REG16(0x0112), 0x01e8 },
+	{ CCI_REG16(0x0006), 0x01f8 },
+	{ CCI_REG16(0x0008), 0x0b40 },
+	{ CCI_REG16(0x000a), 0x0db0 },
+	{ CCI_REG16(0x0700), 0x215a },
+	{ CCI_REG16(0x001e), 0x0301 },
+	{ CCI_REG16(0x0032), 0x0701 },
+	{ CCI_REG16(0x0a02), 0x0100 },
+	{ CCI_REG16(0x0a04), 0x013a },
+};
+
+static const struct sr544_mode sr544_modes[] = {
+	{
+		.width = 2592,
+		.height = 1944,
+		.line_length = 2880,
+		/* Preserve the validated 29.69 fps exposure-safe default. */
+		.frame_length = SR544_EXPOSURE_DEFAULT + SR544_EXPOSURE_MARGIN,
+		.reg_list = sr544_2592x1944_regs,
+		.num_regs = ARRAY_SIZE(sr544_2592x1944_regs),
+	},
+	{
+		.width = 2592,
+		.height = 1458,
+		.line_length = 2880,
+		.frame_length = SR544_EXPOSURE_DEFAULT + SR544_EXPOSURE_MARGIN,
+		.reg_list = sr544_2592x1458_regs,
+		.num_regs = ARRAY_SIZE(sr544_2592x1458_regs),
+	},
+	{
+		.width = 648,
+		.height = 488,
+		.line_length = 2880,
+		.frame_length = 504,
+		.reg_list = sr544_648x488_regs,
+		.num_regs = ARRAY_SIZE(sr544_648x488_regs),
+	},
 };
 
 static const struct cci_reg_sequence sr544_otp_mode_regs[] = {
@@ -311,10 +403,11 @@ static int sr544_register_nvmem(struct sr544 *sensor)
 	return PTR_ERR_OR_ZERO(nvmem);
 }
 
-static void sr544_fill_format(struct v4l2_mbus_framefmt *fmt)
+static void sr544_fill_format(const struct sr544_mode *mode,
+			      struct v4l2_mbus_framefmt *fmt)
 {
-	fmt->width = SR544_WIDTH;
-	fmt->height = SR544_HEIGHT;
+	fmt->width = mode->width;
+	fmt->height = mode->height;
 	fmt->code = MEDIA_BUS_FMT_SBGGR10_1X10;
 	fmt->field = V4L2_FIELD_NONE;
 	fmt->colorspace = V4L2_COLORSPACE_RAW;
@@ -338,25 +431,61 @@ static int sr544_enum_frame_size(struct v4l2_subdev *sd,
 				 struct v4l2_subdev_state *state,
 				 struct v4l2_subdev_frame_size_enum *fse)
 {
-	if (fse->index || fse->code != MEDIA_BUS_FMT_SBGGR10_1X10)
+	if (fse->index >= ARRAY_SIZE(sr544_modes) ||
+	    fse->code != MEDIA_BUS_FMT_SBGGR10_1X10)
 		return -EINVAL;
 
-	fse->min_width = SR544_WIDTH;
-	fse->max_width = SR544_WIDTH;
-	fse->min_height = SR544_HEIGHT;
-	fse->max_height = SR544_HEIGHT;
+	fse->min_width = sr544_modes[fse->index].width;
+	fse->max_width = sr544_modes[fse->index].width;
+	fse->min_height = sr544_modes[fse->index].height;
+	fse->max_height = sr544_modes[fse->index].height;
 	return 0;
+}
+
+static int sr544_update_mode_controls(struct sr544 *sensor,
+				      const struct sr544_mode *mode)
+{
+	s64 hblank = mode->line_length - mode->width;
+	s64 vblank = mode->frame_length - mode->height;
+	int ret;
+
+	ret = __v4l2_ctrl_modify_range(sensor->vblank, vblank,
+				       SR544_FRAME_LENGTH_MAX - mode->height,
+				       1, vblank);
+	if (ret)
+		return ret;
+
+	return __v4l2_ctrl_modify_range(sensor->hblank, hblank, hblank,
+					1, hblank);
 }
 
 static int sr544_set_format(struct v4l2_subdev *sd,
 			    struct v4l2_subdev_state *state,
 			    struct v4l2_subdev_format *format)
 {
+	struct sr544 *sensor = to_sr544(sd);
+	const struct sr544_mode *mode;
 	struct v4l2_mbus_framefmt *fmt;
+	int ret;
 
-	sr544_fill_format(&format->format);
+	mode = v4l2_find_nearest_size(sr544_modes, ARRAY_SIZE(sr544_modes),
+				      width, height, format->format.width,
+				      format->format.height);
+
+	if (format->which == V4L2_SUBDEV_FORMAT_ACTIVE && sensor->streaming)
+		return -EBUSY;
+
+	sr544_fill_format(mode, &format->format);
 	fmt = v4l2_subdev_state_get_format(state, format->pad);
 	*fmt = format->format;
+
+	if (format->which == V4L2_SUBDEV_FORMAT_TRY)
+		return 0;
+
+	sensor->cur_mode = mode;
+	ret = sr544_update_mode_controls(sensor, mode);
+	if (ret)
+		return ret;
 
 	return 0;
 }
@@ -367,6 +496,10 @@ static int sr544_init_state(struct v4l2_subdev *sd,
 	struct v4l2_subdev_format format = {
 		.pad = 0,
 		.which = V4L2_SUBDEV_FORMAT_TRY,
+		.format = {
+			.width = 2592,
+			.height = 1944,
+		},
 	};
 
 	return sr544_set_format(sd, state, &format);
@@ -388,10 +521,11 @@ static int sr544_start_streaming(struct sr544 *sensor)
 		goto power_down;
 	}
 
-	cci_multi_reg_write(sensor->regmap, sr544_2592x1944_regs,
-			    ARRAY_SIZE(sr544_2592x1944_regs), &ret);
+	cci_multi_reg_write(sensor->regmap, sensor->cur_mode->reg_list,
+			    sensor->cur_mode->num_regs, &ret);
 	if (ret) {
-		dev_err(dev, "failed to program native mode: %d\n", ret);
+		dev_err(dev, "failed to program %ux%u mode: %d\n",
+			sensor->cur_mode->width, sensor->cur_mode->height, ret);
 		goto power_down;
 	}
 
@@ -613,7 +747,7 @@ static int sr544_set_ctrl(struct v4l2_ctrl *ctrl)
 
 	/* Keep the exposure range inside the requested frame length. */
 	if (ctrl->id == V4L2_CID_VBLANK) {
-		exposure_max = SR544_HEIGHT + ctrl->val -
+		exposure_max = sensor->cur_mode->height + ctrl->val -
 			       SR544_EXPOSURE_MARGIN;
 		__v4l2_ctrl_modify_range(sensor->exposure,
 					 sensor->exposure->minimum,
@@ -648,7 +782,7 @@ static int sr544_set_ctrl(struct v4l2_ctrl *ctrl)
 		break;
 	case V4L2_CID_VBLANK:
 		cci_write(sensor->regmap, SR544_REG_FRAME_LENGTH,
-			  SR544_HEIGHT + ctrl->val, &ret);
+			  sensor->cur_mode->height + ctrl->val, &ret);
 		break;
 	default:
 		ret = -EINVAL;
@@ -665,6 +799,7 @@ static const struct v4l2_ctrl_ops sr544_ctrl_ops = {
 
 static int sr544_init_controls(struct sr544 *sensor)
 {
+	const struct sr544_mode *mode = sensor->cur_mode;
 	struct v4l2_ctrl *ctrl;
 	s64 exposure_max;
 	s64 hblank;
@@ -688,19 +823,22 @@ static int sr544_init_controls(struct sr544 *sensor)
 	if (ctrl)
 		ctrl->flags |= V4L2_CTRL_FLAG_READ_ONLY;
 
-	vblank_default = SR544_FRAME_LENGTH_DEFAULT - SR544_HEIGHT;
-	v4l2_ctrl_new_std(&sensor->ctrls, &sr544_ctrl_ops, V4L2_CID_VBLANK,
-			  vblank_default,
-			  SR544_FRAME_LENGTH_MAX - SR544_HEIGHT, 1,
-			  vblank_default);
+	vblank_default = mode->frame_length - mode->height;
+	sensor->vblank =
+		v4l2_ctrl_new_std(&sensor->ctrls, &sr544_ctrl_ops,
+				  V4L2_CID_VBLANK, vblank_default,
+				  SR544_FRAME_LENGTH_MAX - mode->height, 1,
+				  vblank_default);
 
-	hblank = SR544_LINE_LENGTH - SR544_WIDTH;
-	ctrl = v4l2_ctrl_new_std(&sensor->ctrls, &sr544_ctrl_ops,
-				 V4L2_CID_HBLANK, hblank, hblank, 1, hblank);
-	if (ctrl)
-		ctrl->flags |= V4L2_CTRL_FLAG_READ_ONLY;
+	hblank = mode->line_length - mode->width;
+	sensor->hblank =
+		v4l2_ctrl_new_std(&sensor->ctrls, &sr544_ctrl_ops,
+				  V4L2_CID_HBLANK, hblank, hblank, 1,
+				  hblank);
+	if (sensor->hblank)
+		sensor->hblank->flags |= V4L2_CTRL_FLAG_READ_ONLY;
 
-	exposure_max = SR544_FRAME_LENGTH_DEFAULT - SR544_EXPOSURE_MARGIN;
+	exposure_max = mode->frame_length - SR544_EXPOSURE_MARGIN;
 	sensor->exposure = v4l2_ctrl_new_std(&sensor->ctrls, &sr544_ctrl_ops,
 					     V4L2_CID_EXPOSURE,
 					     SR544_EXPOSURE_MIN,
@@ -792,6 +930,7 @@ static int sr544_probe(struct i2c_client *client)
 	if (ret)
 		goto power_off;
 
+	sensor->cur_mode = &sr544_modes[0];
 	ret = sr544_init_controls(sensor);
 	if (ret)
 		goto power_off;
