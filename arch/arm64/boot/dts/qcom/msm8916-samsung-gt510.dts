@@ -356,6 +356,7 @@
 		vana-supply = <&reg_camera_vana>;
 		vdig-supply = <&reg_camera_vdig>;
 		vio-supply = <&reg_camera_vio>;
+		lens-focus = <&dw9804>;
 
 		rotation = <90>;
 
@@ -367,6 +368,12 @@
 				remote-endpoint = <&csiphy0_ep>;
 			};
 		};
+	};
+
+	dw9804: camera-lens@c {
+		compatible = "dongwoon,dw9804";
+		reg = <0x0c>;
+		vcc-supply = <&pm8916_l10>;
 	};
 
 	camera@20 {
