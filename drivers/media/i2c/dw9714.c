@@ -39,6 +39,7 @@ struct dw9714_device {
 	struct v4l2_subdev sd;
 	u16 current_val;
 	struct regulator *vcc;
+	struct regulator *iovdd;
 	struct gpio_desc *powerdown_gpio;
 };
 
@@ -143,9 +144,18 @@ static int dw9714_power_up(struct dw9714_device *dw9714_dev)
 {
 	int ret;
 
+	if (dw9714_dev->iovdd) {
+		ret = regulator_enable(dw9714_dev->iovdd);
+		if (ret)
+			return ret;
+	}
+
 	ret = regulator_enable(dw9714_dev->vcc);
-	if (ret)
+	if (ret) {
+		if (dw9714_dev->iovdd)
+			regulator_disable(dw9714_dev->iovdd);
 		return ret;
+	}
 
 	gpiod_set_value_cansleep(dw9714_dev->powerdown_gpio, 0);
 
@@ -156,9 +166,16 @@ static int dw9714_power_up(struct dw9714_device *dw9714_dev)
 
 static int dw9714_power_down(struct dw9714_device *dw9714_dev)
 {
+	int iovdd_ret = 0;
+	int ret;
+
 	gpiod_set_value_cansleep(dw9714_dev->powerdown_gpio, 1);
 
-	return regulator_disable(dw9714_dev->vcc);
+	ret = regulator_disable(dw9714_dev->vcc);
+	if (dw9714_dev->iovdd)
+		iovdd_ret = regulator_disable(dw9714_dev->iovdd);
+
+	return ret ? ret : iovdd_ret;
 }
 
 static int dw9714_probe(struct i2c_client *client)
@@ -175,6 +192,14 @@ static int dw9714_probe(struct i2c_client *client)
 	if (IS_ERR(dw9714_dev->vcc))
 		return PTR_ERR(dw9714_dev->vcc);
 
+	dw9714_dev->iovdd = devm_regulator_get_optional(&client->dev, "iovdd");
+	if (IS_ERR(dw9714_dev->iovdd)) {
+		if (PTR_ERR(dw9714_dev->iovdd) == -ENODEV)
+			dw9714_dev->iovdd = NULL;
+		else
+			return PTR_ERR(dw9714_dev->iovdd);
+	}
+
 	dw9714_dev->powerdown_gpio = devm_gpiod_get_optional(&client->dev,
 							     "powerdown",
 							     GPIOD_OUT_HIGH);
@@ -186,7 +211,7 @@ static int dw9714_probe(struct i2c_client *client)
 	rval = dw9714_power_up(dw9714_dev);
 	if (rval)
 		return dev_err_probe(&client->dev, rval,
-				     "failed to power up: %d\n", rval);
+				     "failed to enable supplies: %d\n", rval);
 
 	v4l2_i2c_subdev_init(&dw9714_dev->sd, client, &dw9714_ops);
 	dw9714_dev->sd.flags |= V4L2_SUBDEV_FL_HAS_DEVNODE |
@@ -232,7 +257,7 @@ static void dw9714_remove(struct i2c_client *client)
 		ret = dw9714_power_down(dw9714_dev);
 		if (ret) {
 			dev_err(&client->dev,
-				"Failed to power down: %d\n", ret);
+				"Failed to disable supplies: %d\n", ret);
 		}
 	}
 	pm_runtime_set_suspended(&client->dev);
@@ -265,7 +290,7 @@ static int __maybe_unused dw9714_vcm_suspend(struct device *dev)
 
 	ret = dw9714_power_down(dw9714_dev);
 	if (ret)
-		dev_err(dev, "Failed to power down: %d\n", ret);
+		dev_err(dev, "Failed to disable supplies: %d\n", ret);
 
 	return ret;
 }
@@ -288,7 +313,7 @@ static int __maybe_unused dw9714_vcm_resume(struct device *dev)
 
 	ret = dw9714_power_up(dw9714_dev);
 	if (ret) {
-		dev_err(dev, "Failed to power up: %d\n", ret);
+		dev_err(dev, "Failed to enable supplies: %d\n", ret);
 		return ret;
 	}
 
