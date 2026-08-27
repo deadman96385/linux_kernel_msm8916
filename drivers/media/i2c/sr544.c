@@ -454,6 +454,9 @@ static int sr544_update_mode_controls(struct sr544 *sensor,
 				       1, vblank);
 	if (ret)
 		return ret;
+	ret = __v4l2_ctrl_s_ctrl(sensor->vblank, vblank);
+	if (ret)
+		return ret;
 
 	return __v4l2_ctrl_modify_range(sensor->hblank, hblank, hblank,
 					1, hblank);
