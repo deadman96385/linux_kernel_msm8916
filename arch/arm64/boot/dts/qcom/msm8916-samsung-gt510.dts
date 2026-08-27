@@ -358,6 +358,7 @@
 		vio-supply = <&reg_camera_vio>;
 		lens-focus = <&dw9804>;
 
+		orientation = <1>; /* Back facing */
 		rotation = <90>;
 
 		port {
@@ -396,6 +397,7 @@
 		vdig-supply = <&reg_camera_vdig>;
 		vio-supply = <&reg_camera_vio>;
 
+		orientation = <0>; /* Front facing */
 		rotation = <270>;
 
 		port {

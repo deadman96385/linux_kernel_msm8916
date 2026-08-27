@@ -64,12 +64,15 @@
 #define SR544_XCLK_MAX			26100000
 #define SR544_LINK_FREQ			440000000
 #define SR544_PIXEL_RATE		176000000
+#define SR544_PIXEL_ARRAY_WIDTH		2592
+#define SR544_PIXEL_ARRAY_HEIGHT	1944
 
 struct sr544_mode {
 	u32 width;
 	u32 height;
 	u32 line_length;
 	u32 frame_length;
+	struct v4l2_rect crop;
 	const struct cci_reg_sequence *reg_list;
 	unsigned int num_regs;
 };
@@ -201,6 +204,10 @@ static const struct sr544_mode sr544_modes[] = {
 		.line_length = 2880,
 		/* Preserve the validated 29.69 fps exposure-safe default. */
 		.frame_length = SR544_EXPOSURE_DEFAULT + SR544_EXPOSURE_MARGIN,
+		.crop = {
+			.width = SR544_PIXEL_ARRAY_WIDTH,
+			.height = SR544_PIXEL_ARRAY_HEIGHT,
+		},
 		.reg_list = sr544_2592x1944_regs,
 		.num_regs = ARRAY_SIZE(sr544_2592x1944_regs),
 	},
@@ -209,6 +216,11 @@ static const struct sr544_mode sr544_modes[] = {
 		.height = 1458,
 		.line_length = 2880,
 		.frame_length = SR544_EXPOSURE_DEFAULT + SR544_EXPOSURE_MARGIN,
+		.crop = {
+			.top = 242,
+			.width = 2592,
+			.height = 1458,
+		},
 		.reg_list = sr544_2592x1458_regs,
 		.num_regs = ARRAY_SIZE(sr544_2592x1458_regs),
 	},
@@ -217,6 +229,10 @@ static const struct sr544_mode sr544_modes[] = {
 		.height = 488,
 		.line_length = 2880,
 		.frame_length = 504,
+		.crop = {
+			.width = SR544_PIXEL_ARRAY_WIDTH,
+			.height = SR544_PIXEL_ARRAY_HEIGHT,
+		},
 		.reg_list = sr544_648x488_regs,
 		.num_regs = ARRAY_SIZE(sr544_648x488_regs),
 	},
@@ -499,6 +515,44 @@ static int sr544_set_format(struct v4l2_subdev *sd,
 	return 0;
 }
 
+static int sr544_get_selection(struct v4l2_subdev *sd,
+			       struct v4l2_subdev_state *state,
+			       struct v4l2_subdev_selection *sel)
+{
+	struct sr544 *sensor = to_sr544(sd);
+	const struct sr544_mode *mode;
+	struct v4l2_mbus_framefmt *fmt;
+
+	if (sel->pad)
+		return -EINVAL;
+
+	switch (sel->target) {
+	case V4L2_SEL_TGT_NATIVE_SIZE:
+	case V4L2_SEL_TGT_CROP_BOUNDS:
+	case V4L2_SEL_TGT_CROP_DEFAULT:
+		sel->r = (struct v4l2_rect) {
+			.width = SR544_PIXEL_ARRAY_WIDTH,
+			.height = SR544_PIXEL_ARRAY_HEIGHT,
+		};
+		return 0;
+	case V4L2_SEL_TGT_CROP:
+		if (sel->which == V4L2_SUBDEV_FORMAT_ACTIVE) {
+			mode = sensor->cur_mode;
+		} else {
+			fmt = v4l2_subdev_state_get_format(state, sel->pad);
+			mode = v4l2_find_nearest_size(sr544_modes,
+						      ARRAY_SIZE(sr544_modes),
+						      width, height,
+						      fmt->width, fmt->height);
+		}
+
+		sel->r = mode->crop;
+		return 0;
+	default:
+		return -EINVAL;
+	}
+}
+
 static int sr544_init_state(struct v4l2_subdev *sd,
 			    struct v4l2_subdev_state *state)
 {
@@ -607,6 +661,7 @@ static const struct v4l2_subdev_pad_ops sr544_pad_ops = {
 	.enum_frame_size = sr544_enum_frame_size,
 	.get_fmt = v4l2_subdev_get_fmt,
 	.set_fmt = sr544_set_format,
+	.get_selection = sr544_get_selection,
 };
 
 static const struct v4l2_subdev_ops sr544_subdev_ops = {
@@ -811,13 +866,14 @@ static const struct v4l2_ctrl_ops sr544_ctrl_ops = {
 static int sr544_init_controls(struct sr544 *sensor)
 {
 	const struct sr544_mode *mode = sensor->cur_mode;
+	struct v4l2_fwnode_device_properties props;
 	struct v4l2_ctrl *ctrl;
 	s64 exposure_max;
 	s64 hblank;
 	s64 vblank_default;
 	int ret;
 
-	ret = v4l2_ctrl_handler_init(&sensor->ctrls, 7);
+	ret = v4l2_ctrl_handler_init(&sensor->ctrls, 9);
 	if (ret)
 		return ret;
 
@@ -864,14 +920,26 @@ static int sr544_init_controls(struct sr544 *sensor)
 			  SR544_DIGITAL_GAIN_MIN, SR544_DIGITAL_GAIN_MAX,
 			  1, SR544_DIGITAL_GAIN_MIN);
 
+	ret = v4l2_fwnode_device_parse(sensor->sd.dev, &props);
+	if (ret)
+		goto free_controls;
+
+	ret = v4l2_ctrl_new_fwnode_properties(&sensor->ctrls,
+					      &sr544_ctrl_ops, &props);
+	if (ret)
+		goto free_controls;
+
 	if (sensor->ctrls.error) {
 		ret = sensor->ctrls.error;
-		v4l2_ctrl_handler_free(&sensor->ctrls);
-		return ret;
+		goto free_controls;
 	}
 
 	sensor->sd.ctrl_handler = &sensor->ctrls;
 	return 0;
+
+free_controls:
+	v4l2_ctrl_handler_free(&sensor->ctrls);
+	return ret;
 }
 
 static int sr544_probe(struct i2c_client *client)
