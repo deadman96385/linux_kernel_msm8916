@@ -1,0 +1,80 @@
+# SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
+%YAML 1.2
+---
+$id: http://devicetree.org/schemas/leds/backlight/richtek,rt8555.yaml#
+$schema: http://devicetree.org/meta-schemas/core.yaml#
+
+title: Richtek RT8555 6-channel WLED backlight driver
+
+maintainers:
+  - postmarketOS Kernel maintainers <kernel@postmarketos.org>
+
+description: |
+  The RT8555 is a 6-channel current-mode boost converter for white LED
+  backlights. It supports an I2C-programmable 10-bit brightness level and up
+  to 35 mA per LED string.
+
+  https://www.richtek.com/assets/product_file/RT8555/DS8555-01.pdf
+
+allOf:
+  - $ref: common.yaml#
+
+properties:
+  compatible:
+    const: richtek,rt8555
+
+  reg:
+    maxItems: 1
+
+  enable-gpios:
+    description:
+      GPIO connected to the active-high EN pin. May be omitted when EN is
+      tied high.
+    maxItems: 1
+
+  max-brightness:
+    minimum: 1
+    maximum: 1023
+    default: 1023
+
+  default-brightness:
+    maximum: 1023
+
+  richtek,led-current-microamp:
+    description:
+      Maximum current for each enabled LED current sink. Values are rounded
+      to the nearest supported hardware step.
+    minimum: 10020
+    maximum: 35000
+    default: 20040
+
+  richtek,led-driver-headroom-microvolt:
+    description: Voltage headroom maintained across each LED current sink.
+    enum: [ 500000, 570000, 600000, 700000 ]
+    default: 500000
+
+required:
+  - compatible
+  - reg
+
+unevaluatedProperties: false
+
+examples:
+  - |
+    #include <dt-bindings/gpio/gpio.h>
+
+    i2c {
+        #address-cells = <1>;
+        #size-cells = <0>;
+
+        backlight@31 {
+            compatible = "richtek,rt8555";
+            reg = <0x31>;
+            enable-gpios = <&gpio 69 GPIO_ACTIVE_HIGH>;
+
+            default-brightness = <511>;
+            richtek,led-current-microamp = <25000>;
+            richtek,led-driver-headroom-microvolt = <570000>;
+        };
+    };
+...
