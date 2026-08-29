@@ -515,7 +515,8 @@ static int sm5703_fg_ensure_model(struct sm5703_fg *fg, bool verify)
 	return ret;
 }
 
-static int sm5703_fg_update_current_calibration(struct sm5703_fg *fg)
+static int sm5703_fg_update_current_calibration(struct sm5703_fg *fg,
+						struct power_supply *psy)
 {
 	union power_supply_propval value;
 	int temperature;
@@ -525,7 +526,7 @@ static int sm5703_fg_update_current_calibration(struct sm5703_fg *fg)
 	int ret;
 
 	calibration = fg->model.curr_cal;
-	ret = power_supply_get_property_from_supplier(fg->psy,
+	ret = power_supply_get_property_from_supplier(psy,
 						      POWER_SUPPLY_PROP_STATUS,
 						      &value);
 	if (!ret && value.intval == POWER_SUPPLY_STATUS_CHARGING) {
@@ -586,11 +587,11 @@ static int sm5703_fg_init_alerts(struct sm5703_fg *fg)
 	return sm5703_fg_write(fg, SM5703_FG_REG_CNTL, control);
 }
 
-static int sm5703_fg_get_supplier_property(struct sm5703_fg *fg,
+static int sm5703_fg_get_supplier_property(struct power_supply *psy,
 					   enum power_supply_property psp,
 					   union power_supply_propval *value)
 {
-	return power_supply_get_property_from_supplier(fg->psy, psp, value);
+	return power_supply_get_property_from_supplier(psy, psp, value);
 }
 
 static enum power_supply_property sm5703_fg_properties[] = {
@@ -623,7 +624,7 @@ static int sm5703_fg_get_property(struct power_supply *psy,
 	case POWER_SUPPLY_PROP_STATUS:
 	case POWER_SUPPLY_PROP_HEALTH:
 	case POWER_SUPPLY_PROP_PRESENT:
-		ret = sm5703_fg_get_supplier_property(fg, psp, value);
+		ret = sm5703_fg_get_supplier_property(psy, psp, value);
 		break;
 	case POWER_SUPPLY_PROP_TECHNOLOGY:
 		value->intval = fg->technology;
@@ -637,7 +638,7 @@ static int sm5703_fg_get_property(struct power_supply *psy,
 				fg->alerts_valid = true;
 		}
 		if (!ret)
-			ret = sm5703_fg_update_current_calibration(fg);
+			ret = sm5703_fg_update_current_calibration(fg, psy);
 		if (!ret)
 			ret = sm5703_fg_read_soc(fg, &value->intval);
 		if (!ret)
