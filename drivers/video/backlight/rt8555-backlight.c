@@ -121,8 +121,7 @@ static int rt8555_enable(struct rt8555 *rt)
 
 	if (rt->enable_gpio) {
 		gpiod_set_value_cansleep(rt->enable_gpio, 1);
-		/* The device accepts its board configuration 1 ms after EN. */
-		usleep_range(1000, 2000);
+		usleep_range(10000, 20000);
 	}
 
 	ret = rt8555_apply_config(rt);
