@@ -29,6 +29,31 @@
 		};
 	};
 
+	i2c-backlight {
+		compatible = "i2c-gpio";
+		sda-gpios = <&tlmm 24 (GPIO_ACTIVE_HIGH | GPIO_OPEN_DRAIN)>;
+		scl-gpios = <&tlmm 25 (GPIO_ACTIVE_HIGH | GPIO_OPEN_DRAIN)>;
+
+		pinctrl-0 = <&backlight_i2c_default>;
+		pinctrl-names = "default";
+
+		#address-cells = <1>;
+		#size-cells = <0>;
+
+		backlight: backlight@31 {
+			compatible = "richtek,rt8555";
+			reg = <0x31>;
+
+			enable-gpios = <&tlmm 69 GPIO_ACTIVE_HIGH>;
+			pinctrl-0 = <&backlight_enable_default>;
+			pinctrl-names = "default";
+
+			default-brightness = <511>;
+			richtek,led-current-microamp = <25000>;
+			richtek,led-driver-headroom-microvolt = <570000>;
+		};
+	};
+
 	gpio-keys {
 		compatible = "gpio-keys";
 
@@ -169,6 +194,7 @@
 		compatible = "samsung,nt51017-b4p096wx5vp09";
 		reg = <0>;
 
+		backlight = <&backlight>;
 		lcd-supply = <&reg_lcd>;
 
 		port {
@@ -292,6 +318,20 @@
 &tlmm {
 	accel_int_default: accel-int-default-state {
 		pins = "gpio115";
+		function = "gpio";
+		drive-strength = <2>;
+		bias-disable;
+	};
+
+	backlight_enable_default: backlight-enable-default-state {
+		pins = "gpio69";
+		function = "gpio";
+		drive-strength = <2>;
+		bias-disable;
+	};
+
+	backlight_i2c_default: backlight-i2c-default-state {
+		pins = "gpio24", "gpio25";
 		function = "gpio";
 		drive-strength = <2>;
 		bias-disable;
