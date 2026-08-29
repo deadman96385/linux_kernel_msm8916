@@ -30,6 +30,7 @@
 #define TM2_TOUCHKEY_CMD_LED_OFF	0x20
 #define TM2_TOUCHKEY_BIT_PRESS_EV	BIT(3)
 #define TM2_TOUCHKEY_BIT_KEYCODE	GENMASK(2, 0)
+#define TM2_TOUCHKEY_BITMAP_RELEASE	GENMASK(7, 4)
 #define TM2_TOUCHKEY_LED_VOLTAGE_MIN	2500000
 #define TM2_TOUCHKEY_LED_VOLTAGE_MAX	3300000
 
@@ -40,6 +41,7 @@ struct touchkey_variant {
 	u8 cmd_led_off;
 	bool no_reg;
 	bool fixed_regulator;
+	bool keycode_bitmap;
 };
 
 struct tm2_touchkey_data {
@@ -79,6 +81,15 @@ static const struct touchkey_variant tc360_touchkey_variant = {
 	.keycode_reg = 0x00,
 	.base_reg = 0x00,
 	.fixed_regulator = true,
+	.cmd_led_on = TM2_TOUCHKEY_CMD_LED_ON,
+	.cmd_led_off = TM2_TOUCHKEY_CMD_LED_OFF,
+};
+
+static const struct touchkey_variant tc360_j5_touchkey_variant = {
+	.keycode_reg = 0x00,
+	.base_reg = 0x00,
+	.fixed_regulator = true,
+	.keycode_bitmap = true,
 	.cmd_led_on = TM2_TOUCHKEY_CMD_LED_ON,
 	.cmd_led_off = TM2_TOUCHKEY_CMD_LED_OFF,
 };
@@ -147,12 +158,39 @@ static void tm2_touchkey_power_disable(void *data)
 	touchkey->powered = false;
 }
 
+static bool tm2_touchkey_report_bitmap(struct tm2_touchkey_data *touchkey,
+				       u8 data)
+{
+	bool handled = false;
+	int i;
+
+	for (i = 0; i < touchkey->num_keycodes; i++) {
+		if (data & BIT(i)) {
+			input_event(touchkey->input_dev, EV_MSC, MSC_SCAN, i);
+			input_report_key(touchkey->input_dev,
+					 touchkey->keycodes[i], true);
+			handled = true;
+		}
+
+		if (data & BIT(i + 4)) {
+			input_event(touchkey->input_dev, EV_MSC, MSC_SCAN, i);
+			input_report_key(touchkey->input_dev,
+					 touchkey->keycodes[i], false);
+			handled = true;
+		}
+	}
+
+	return handled;
+}
+
 static irqreturn_t tm2_touchkey_irq_handler(int irq, void *devid)
 {
 	struct tm2_touchkey_data *touchkey = devid;
 	int data;
 	int index;
 	int i;
+	bool handled;
+	bool key_released = false;
 
 	if (touchkey->variant->no_reg)
 		data = i2c_smbus_read_byte(touchkey->client);
@@ -165,29 +203,39 @@ static irqreturn_t tm2_touchkey_irq_handler(int irq, void *devid)
 		goto out;
 	}
 
-	index = (data & TM2_TOUCHKEY_BIT_KEYCODE) - 1;
-	if (index < 0 || index >= touchkey->num_keycodes) {
-		dev_warn(&touchkey->client->dev,
-			 "invalid keycode index %d\n", index);
-		goto out;
-	}
-
-	input_event(touchkey->input_dev, EV_MSC, MSC_SCAN, index);
-
-	if (data & TM2_TOUCHKEY_BIT_PRESS_EV) {
-		for (i = 0; i < touchkey->num_keycodes; i++)
-			input_report_key(touchkey->input_dev,
-					 touchkey->keycodes[i], 0);
+	if (touchkey->variant->keycode_bitmap) {
+		handled = tm2_touchkey_report_bitmap(touchkey, data);
+		key_released = data & TM2_TOUCHKEY_BITMAP_RELEASE;
+		if (!handled) {
+			dev_warn(&touchkey->client->dev,
+				 "invalid keycode bitmap 0x%02x\n", data);
+			goto out;
+		}
 	} else {
-		input_report_key(touchkey->input_dev,
-				 touchkey->keycodes[index], 1);
+		index = (data & TM2_TOUCHKEY_BIT_KEYCODE) - 1;
+		if (index < 0 || index >= touchkey->num_keycodes) {
+			dev_warn(&touchkey->client->dev,
+				 "invalid keycode index %d\n", index);
+			goto out;
+		}
+
+		input_event(touchkey->input_dev, EV_MSC, MSC_SCAN, index);
+
+		key_released = data & TM2_TOUCHKEY_BIT_PRESS_EV;
+		if (key_released) {
+			for (i = 0; i < touchkey->num_keycodes; i++)
+				input_report_key(touchkey->input_dev,
+						 touchkey->keycodes[i], false);
+		} else {
+			input_report_key(touchkey->input_dev,
+					 touchkey->keycodes[index], true);
+		}
 	}
 
 	input_sync(touchkey->input_dev);
 
 out:
-	if (data >= 0 && touchkey->variant->fixed_regulator &&
-	    data & TM2_TOUCHKEY_BIT_PRESS_EV) {
+	if (touchkey->variant->fixed_regulator && key_released) {
 		/* touch turns backlight on, so make sure we're in sync */
 		if (touchkey->led_dev.brightness == LED_OFF)
 			tm2_touchkey_led_brightness_set(&touchkey->led_dev,
@@ -375,8 +423,14 @@ static const struct of_device_id tm2_touchkey_of_match[] = {
 		.compatible = "cypress,aries-touchkey",
 		.data = &aries_touchkey_variant,
 	}, {
+		.compatible = "coreriver,tc305-touchkey",
+		.data = &tc360_j5_touchkey_variant,
+	}, {
 		.compatible = "coreriver,tc360-touchkey",
 		.data = &tc360_touchkey_variant,
+	}, {
+		.compatible = "coreriver,tc360-j5-touchkey",
+		.data = &tc360_j5_touchkey_variant,
 	},
 	{ },
 };
