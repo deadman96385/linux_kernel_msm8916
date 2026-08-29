@@ -466,7 +466,8 @@ static int zinitix_init_touch(struct bt541_ts_data *bt541)
 	if (error)
 		return error;
 
-	int_flags = BIT_PT_CNT_CHANGE | BIT_DOWN | BIT_MOVE | BIT_UP;
+	int_flags = BIT_PT_CNT_CHANGE | BIT_DOWN | BIT_MOVE | BIT_UP |
+		    BIT_PALM;
 	if (bt541->num_keycodes)
 		int_flags |= BIT_ICON_EVENT;
 
@@ -703,6 +704,7 @@ static irqreturn_t zinitix_ts_irq_handler(int irq, void *bt541_handler)
 	}
 	if (error) {
 		dev_err(&client->dev, "Failed to read in touchpoint struct\n");
+		zinitix_release_inputs(bt541);
 		goto out;
 	}
 
@@ -711,6 +713,7 @@ static irqreturn_t zinitix_ts_irq_handler(int irq, void *bt541_handler)
 					  &icon_events, sizeof(icon_events));
 		if (error) {
 			dev_err(&client->dev, "Failed to read icon events\n");
+			zinitix_release_inputs(bt541);
 			goto out;
 		}
 
@@ -879,8 +882,16 @@ static int zinitix_init_input_dev(struct bt541_ts_data *bt541)
 		return -EINVAL;
 	}
 
+	/*
+	 * Mode 1 reports only slots which changed in event_flag, so contacts
+	 * absent from one frame must remain active until their explicit UP event.
+	 * Mode 2 reports the complete active-finger mask and can safely drop slots
+	 * which were not refreshed in the current frame.
+	 */
 	error = input_mt_init_slots(input_dev, MAX_SUPPORTED_FINGER_NUM,
-				    INPUT_MT_DIRECT | INPUT_MT_DROP_UNUSED);
+				    INPUT_MT_DIRECT |
+				    (bt541->zinitix_mode == 2 ?
+				     INPUT_MT_DROP_UNUSED : 0));
 	if (error) {
 		dev_err(&bt541->client->dev,
 			"Failed to initialize MT slots: %d", error);
