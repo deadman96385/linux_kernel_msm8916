@@ -71,6 +71,19 @@
 			siliconmitus,fuel-alert-soc = <1>;
 		};
 	};
+
+	reg_proximity_vled: regulator-proximity-vled {
+		compatible = "regulator-fixed";
+		regulator-name = "proximity_vled";
+		regulator-min-microvolt = <3000000>;
+		regulator-max-microvolt = <3000000>;
+
+		gpio = <&tlmm 73 GPIO_ACTIVE_HIGH>;
+		enable-active-high;
+
+		pinctrl-0 = <&proximity_vled_default>;
+		pinctrl-names = "default";
+	};
 };
 
 &accelerometer {
@@ -80,6 +93,27 @@
 
 &front_flash_led {
 	ctrl-gpios = <&tlmm 50 GPIO_ACTIVE_HIGH>;
+};
+
+&i2c_sensors {
+	proximity@44 {
+		compatible = "sharp,gp2ap002s00f";
+		reg = <0x44>;
+
+		interrupt-parent = <&tlmm>;
+		interrupts = <113 IRQ_TYPE_EDGE_FALLING>;
+
+		vdd-supply = <&pm8916_l17>;
+		vio-supply = <&pm8916_l5>;
+		vled-supply = <&reg_proximity_vled>;
+
+		sharp,proximity-far-hysteresis = /bits/ 8 <0x2f>;
+		sharp,proximity-close-hysteresis = /bits/ 8 <0x0d>;
+
+		pinctrl-0 = <&proximity_int_default>;
+		pinctrl-names = "default";
+		wakeup-source;
+	};
 };
 
 &panel {
@@ -135,6 +169,22 @@
 
 	fuel_gauge_int_default: fuel-gauge-int-default-state {
 		pins = "gpio121";
+		function = "gpio";
+
+		drive-strength = <2>;
+		bias-disable;
+	};
+
+	proximity_int_default: proximity-int-default-state {
+		pins = "gpio113";
+		function = "gpio";
+
+		drive-strength = <2>;
+		bias-disable;
+	};
+
+	proximity_vled_default: proximity-vled-default-state {
+		pins = "gpio73";
 		function = "gpio";
 
 		drive-strength = <2>;
