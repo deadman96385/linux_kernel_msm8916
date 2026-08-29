@@ -177,11 +177,11 @@ static int sm5703_set_charging_locked(struct sm5703_charger *charger,
 	int ret;
 
 	if (!enable) {
+		/* Drop the external enable first so an I2C error fails safe. */
+		gpiod_set_value_cansleep(charger->enable_gpio, 0);
 		ret = sm5703_set_charging(charger->sm5703, false);
-		if (!ret) {
-			gpiod_set_value_cansleep(charger->enable_gpio, 0);
+		if (!ret || charger->enable_gpio)
 			charger->hw_charge_enabled = false;
-		}
 		return ret;
 	}
 
@@ -194,6 +194,31 @@ static int sm5703_set_charging_locked(struct sm5703_charger *charger,
 		sm5703_charging_active(charger->sm5703);
 
 	return 0;
+}
+
+static void sm5703_charger_remove(struct platform_device *pdev)
+{
+	struct sm5703_charger *charger = platform_get_drvdata(pdev);
+	int ret;
+
+	/* Stop new cable events before draining work which can enable charging. */
+	devm_extcon_unregister_notifier_all(charger->dev, charger->extcon,
+					    &charger->extcon_nb);
+	cancel_work_sync(&charger->extcon_work);
+
+	mutex_lock(&charger->lock);
+	charger->source_online = false;
+	charger->usb_type = POWER_SUPPLY_USB_TYPE_UNKNOWN;
+	charger->user_enabled = false;
+	ret = sm5703_set_charging_locked(charger, false);
+	mutex_unlock(&charger->lock);
+	if (ret)
+		dev_err(charger->dev,
+			"failed to stop charging during removal: %d\n", ret);
+
+	/* source_online is now false, so the AICL IRQ cannot requeue work. */
+	cancel_delayed_work_sync(&charger->aicl_work);
+	cancel_delayed_work_sync(&charger->monitor_work);
 }
 
 static int sm5703_apply_charge_enable_locked(struct sm5703_charger *charger)
@@ -1040,6 +1065,7 @@ static struct platform_driver sm5703_charger_driver = {
 		.of_match_table = sm5703_charger_of_match,
 	},
 	.probe = sm5703_charger_probe,
+	.remove = sm5703_charger_remove,
 	.id_table = sm5703_charger_id,
 };
 module_platform_driver(sm5703_charger_driver);
