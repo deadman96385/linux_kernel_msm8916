@@ -44,6 +44,8 @@ properties:
   vled-supply:
     description: Regulator providing power to the IR anode pin.
 
+  wakeup-source: true
+
   reg:
     maxItems: 1
 
