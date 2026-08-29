@@ -93,6 +93,7 @@ struct sm5502_type {
 	unsigned int usb_vbus_sw;
 	bool force_manual_path;
 	bool ack_irqs_before_enable;
+	bool retry_detached;
 	int (*parse_irq)(struct sm5502_muic_info *info, int irq_type);
 };
 
@@ -897,13 +898,16 @@ static void sm5502_muic_detect_cable_wq(struct work_struct *work)
 {
 	struct sm5502_muic_info *info = container_of(to_delayed_work(work),
 				struct sm5502_muic_info, wq_detcable);
+	bool detached;
 	int ret;
 
 	mutex_lock(&info->mutex);
 
 	/* Notify the state of connector cable or not  */
 	ret = sm5502_muic_update_cable(info, false);
-	if (ret == -EAGAIN && info->detect_retries < DETECT_RETRY_MAX) {
+	detached = !sm5502_muic_cable_supported(info->prev_cable_type);
+	if ((ret < 0 || (info->type->retry_detached && detached)) &&
+	    info->detect_retries < DETECT_RETRY_MAX) {
 		info->detect_retries++;
 		mod_delayed_work(system_power_efficient_wq, &info->wq_detcable,
 				 msecs_to_jiffies(DETECT_RETRY_MS));
@@ -1159,6 +1163,7 @@ static const struct sm5502_type sm5703_data = {
 	.usb_vbus_sw = VBUSIN_SWITCH_VBUSOUT,
 	.force_manual_path = true,
 	.ack_irqs_before_enable = true,
+	.retry_detached = true,
 	.parse_irq = sm5703_parse_irq,
 };
 
@@ -1191,12 +1196,16 @@ static int sm5502_muic_resume(struct device *dev)
 		ret = sm5502_muic_update_cable(info, true);
 	mutex_unlock(&info->mutex);
 
-	if (ret == -EAGAIN) {
-		info->detect_retries = 0;
+	info->detect_retries = 0;
+	if (ret < 0 ||
+	    (info->type->retry_detached &&
+	     !sm5502_muic_cable_supported(info->prev_cable_type))) {
 		mod_delayed_work(system_power_efficient_wq, &info->wq_detcable,
 				 msecs_to_jiffies(DETECT_RETRY_MS));
-	} else if (ret) {
-		dev_warn(info->dev, "failed to restore MUIC state: %d\n", ret);
+		if (ret)
+			dev_warn(info->dev,
+				 "MUIC state restore incomplete, retrying: %d\n",
+				 ret);
 	}
 
 	return 0;
