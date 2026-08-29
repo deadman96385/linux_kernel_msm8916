@@ -8,15 +8,74 @@
 	model = "Samsung Galaxy J5 (2015)";
 	compatible = "samsung,j5", "qcom,msm8916";
 	chassis-type = "handset";
+
+	battery: battery {
+		compatible = "simple-battery";
+		device-chemistry = "lithium-ion";
+		charge-full-design-microamp-hours = <2600000>;
+		voltage-min-design-microvolt = <3400000>;
+		voltage-max-design-microvolt = <4350000>;
+		constant-charge-current-max-microamp = <1500000>;
+		constant-charge-voltage-max-microvolt = <4350000>;
+		charge-term-current-microamp = <200000>;
+		operating-range-celsius = <(-5) 60>;
+		alert-celsius = <0 45>;
+	};
+
+	i2c_fuel_gauge: i2c-fuelgauge {
+		compatible = "i2c-gpio";
+		sda-gpios = <&tlmm 14 (GPIO_ACTIVE_HIGH | GPIO_OPEN_DRAIN)>;
+		scl-gpios = <&tlmm 15 (GPIO_ACTIVE_HIGH | GPIO_OPEN_DRAIN)>;
+		i2c-gpio,delay-us = <2>;
+
+		pinctrl-0 = <&fuel_gauge_i2c_default>;
+		pinctrl-names = "default";
+
+		#address-cells = <1>;
+		#size-cells = <0>;
+
+		fuel_gauge: fuel-gauge@71 {
+			compatible = "siliconmitus,sm5703-fuel-gauge";
+			reg = <0x71>;
+
+			interrupt-parent = <&tlmm>;
+			interrupts = <121 IRQ_TYPE_EDGE_FALLING>;
+			pinctrl-0 = <&fuel_gauge_int_default>;
+			pinctrl-names = "default";
+			wakeup-source;
+
+			monitored-battery = <&battery>;
+			power-supplies = <&charger>;
+
+			siliconmitus,battery-table-0 =
+				<0x1400 0x1b33 0x1c4d 0x1d6c 0x1d88 0x1db9 0x1de0 0x1dfa
+				 0x1e26 0x1e9e 0x1ecd 0x1f12 0x1f60 0x20e9 0x225c 0x2399>;
+			siliconmitus,battery-table-1 =
+				<0x1400 0x1b33 0x1c4d 0x1d6c 0x1d88 0x1db9 0x1de0 0x1dfa
+				 0x1e26 0x1e9e 0x1ecd 0x1f12 0x1f60 0x20e9 0x225c 0x2399>;
+			siliconmitus,battery-table-2 =
+				<0x0000 0x002f 0x00b8 0x0171 0x02fc 0x0380 0x0403 0x0487
+				 0x058f 0x09ad 0x0ab5 0x0bbc 0x0c40 0x10e2 0x1497 0x149c>;
+			siliconmitus,rce-values = <0x0749 0x0580 0x0371>;
+			siliconmitus,dtcd-value = <1>;
+			siliconmitus,rs-values = <0x01ae 0x047a 0x3800 0x00a4>;
+			siliconmitus,vit-period = <0x3506>;
+			siliconmitus,mix-values = <0x0503 0x0004>;
+			siliconmitus,topoff-soc-values = <0 5>;
+			siliconmitus,voltage-calibration = <0x8000>;
+			siliconmitus,current-calibration = <0x7500>;
+			siliconmitus,temperature-standard-celsius = <25>;
+			siliconmitus,temperature-offset-divisor = <10>;
+			siliconmitus,temperature-offset-calibration = <1>;
+			siliconmitus,charge-offset-calibration = <(-1)>;
+			siliconmitus,fuel-alert-soc = <1>;
+		};
+	};
 };
 
 &accelerometer {
 	vdd-supply = <&pm8916_l5>;
 	vddio-supply = <&pm8916_l5>;
-};
-
-&blsp_i2c5 {
-	status = "disabled";
 };
 
 &front_flash_led {
@@ -36,8 +95,51 @@
 	gpio = <&tlmm 16 GPIO_ACTIVE_HIGH>;
 };
 
+&sm5703 {
+	charger: charger {
+		compatible = "siliconmitus,sm5703-charger";
+		monitored-battery = <&battery>;
+		siliconmitus,monitored-fuel-gauge = <&fuel_gauge>;
+		siliconmitus,usb-connector = <&usb_con>;
+		enable-gpios = <&tlmm 108 GPIO_ACTIVE_LOW>;
+		input-current-limit-microamp = <1000000>;
+		input-voltage-limit-microvolt = <4500000>;
+		siliconmitus,topoff-timer-minutes = <45>;
+		siliconmitus,boost-iq3-limit-1x;
+
+		pinctrl-0 = <&charger_enable_default>;
+		pinctrl-names = "default";
+	};
+};
+
 &touchscreen {
-	/* FIXME: Missing sm5703-mfd driver to power up vdd-supply */
+	vdd-supply = <&sm5703_ldo3>;
+};
+
+&tlmm {
+	charger_enable_default: charger-enable-default-state {
+		pins = "gpio108";
+		function = "gpio";
+
+		drive-strength = <2>;
+		bias-disable;
+	};
+
+	fuel_gauge_i2c_default: fuel-gauge-i2c-default-state {
+		pins = "gpio14", "gpio15";
+		function = "gpio";
+
+		drive-strength = <2>;
+		bias-disable;
+	};
+
+	fuel_gauge_int_default: fuel-gauge-int-default-state {
+		pins = "gpio121";
+		function = "gpio";
+
+		drive-strength = <2>;
+		bias-disable;
+	};
 };
 
 &usb_hs_phy {

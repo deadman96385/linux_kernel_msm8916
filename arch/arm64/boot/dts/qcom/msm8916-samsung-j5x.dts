@@ -9,6 +9,69 @@
 	compatible = "samsung,j5x", "qcom,msm8916";
 	chassis-type = "handset";
 
+	battery: battery {
+		compatible = "simple-battery";
+		device-chemistry = "lithium-ion";
+		charge-full-design-microamp-hours = <3100000>;
+		voltage-min-design-microvolt = <3400000>;
+		voltage-max-design-microvolt = <4390000>;
+		constant-charge-current-max-microamp = <2000000>;
+		constant-charge-voltage-max-microvolt = <4390000>;
+		charge-term-current-microamp = <200000>;
+		operating-range-celsius = <(-5) 55>;
+		alert-celsius = <0 50>;
+	};
+
+	i2c_fuel_gauge: i2c-fuelgauge {
+		compatible = "i2c-gpio";
+		sda-gpios = <&tlmm 16 (GPIO_ACTIVE_HIGH | GPIO_OPEN_DRAIN)>;
+		scl-gpios = <&tlmm 17 (GPIO_ACTIVE_HIGH | GPIO_OPEN_DRAIN)>;
+		i2c-gpio,delay-us = <2>;
+
+		pinctrl-0 = <&fuel_gauge_i2c_default>;
+		pinctrl-names = "default";
+
+		#address-cells = <1>;
+		#size-cells = <0>;
+
+		fuel_gauge: fuel-gauge@71 {
+			compatible = "siliconmitus,sm5703-fuel-gauge";
+			reg = <0x71>;
+
+			interrupt-parent = <&tlmm>;
+			interrupts = <21 IRQ_TYPE_EDGE_FALLING>;
+			pinctrl-0 = <&fuel_gauge_int_default>;
+			pinctrl-names = "default";
+			wakeup-source;
+
+			monitored-battery = <&battery>;
+			power-supplies = <&charger>;
+
+			siliconmitus,battery-table-0 =
+				<0x1400 0x1b33 0x1c5a 0x1d67 0x1d89 0x1de7 0x1e21 0x1e94
+				 0x1ee3 0x1f55 0x200e 0x2081 0x20ab 0x2239 0x22c9 0x2400>;
+			siliconmitus,battery-table-1 =
+				<0x1400 0x1b33 0x1c5a 0x1d67 0x1d89 0x1de7 0x1e21 0x1e94
+				 0x1ee3 0x1f55 0x200e 0x2081 0x20ab 0x2239 0x22c9 0x2400>;
+			siliconmitus,battery-table-2 =
+				<0x0000 0x0020 0x0062 0x0126 0x028f 0x047a 0x0666 0x0b85
+				 0x0d70 0x0eb8 0x11eb 0x1333 0x13d7 0x1851 0x1999 0x19ad>;
+			siliconmitus,rce-values = <0x0749 0x0580 0x0371>;
+			siliconmitus,dtcd-value = <1>;
+			siliconmitus,rs-values = <0x01ae 0x047a 0x3800 0x00a4>;
+			siliconmitus,vit-period = <0x3506>;
+			siliconmitus,mix-values = <0x0403 0x0004>;
+			siliconmitus,topoff-soc-values = <0 5>;
+			siliconmitus,voltage-calibration = <0x809e>;
+			siliconmitus,current-calibration = <0x7585>;
+			siliconmitus,temperature-standard-celsius = <25>;
+			siliconmitus,temperature-offset-divisor = <10>;
+			siliconmitus,temperature-offset-calibration = <1>;
+			siliconmitus,charge-offset-calibration = <7>;
+			siliconmitus,fuel-alert-soc = <1>;
+		};
+	};
+
 	reg_vdd_lcd_3p0: regulator-vdd-lcd-3p0 {
 		compatible = "regulator-fixed";
 		regulator-name = "vdd_lcd_3p0";
@@ -65,11 +128,57 @@
 	gpio = <&tlmm 69 GPIO_ACTIVE_HIGH>;
 };
 
+&sm5703 {
+	charger: charger {
+		compatible = "siliconmitus,sm5703-charger";
+		monitored-battery = <&battery>;
+		siliconmitus,monitored-fuel-gauge = <&fuel_gauge>;
+		siliconmitus,usb-connector = <&usb_con>;
+		enable-gpios = <&tlmm 114 GPIO_ACTIVE_LOW>;
+		input-current-limit-microamp = <1550000>;
+		input-voltage-limit-microvolt = <4500000>;
+		siliconmitus,topoff-timer-minutes = <45>;
+		siliconmitus,boost-iq3-limit-1x;
+		siliconmitus,automatic-charge-stop;
+
+		pinctrl-0 = <&charger_enable_default>;
+		pinctrl-names = "default";
+	};
+};
+
 &touchscreen {
 	vdd-supply = <&reg_vdd_tsp_a>;
 };
 
+&touchkey {
+	compatible = "coreriver,tc305-touchkey";
+};
+
 &tlmm {
+	charger_enable_default: charger-enable-default-state {
+		pins = "gpio114";
+		function = "gpio";
+
+		drive-strength = <2>;
+		bias-disable;
+	};
+
+	fuel_gauge_i2c_default: fuel-gauge-i2c-default-state {
+		pins = "gpio16", "gpio17";
+		function = "gpio";
+
+		drive-strength = <2>;
+		bias-disable;
+	};
+
+	fuel_gauge_int_default: fuel-gauge-int-default-state {
+		pins = "gpio21";
+		function = "gpio";
+
+		drive-strength = <2>;
+		bias-disable;
+	};
+
 	lcd_3p0_ldo_en_default: lcd-3p0-ldo-en-default-state {
 		pins = "gpio115";
 		function = "gpio";
