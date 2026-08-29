@@ -67,7 +67,6 @@ static int s6e8aa5x01_ams520kt01_on(struct s6e8aa5x01_ams520kt01 *ctx)
 	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0xb8, 0xa8);
 	mipi_dsi_msleep(&dsi_ctx, 120);
 	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0xf0, 0xa5, 0xa5);
-	mipi_dsi_dcs_set_display_on_multi(&dsi_ctx);
 
 	return dsi_ctx.accum_err;
 }
@@ -76,9 +75,6 @@ static int s6e8aa5x01_ams520kt01_off(struct s6e8aa5x01_ams520kt01 *ctx)
 {
 	struct mipi_dsi_multi_context dsi_ctx = { .dsi = ctx->dsi };
 
-	ctx->dsi->mode_flags &= ~MIPI_DSI_MODE_LPM;
-
-	mipi_dsi_dcs_set_display_off_multi(&dsi_ctx);
 	mipi_dsi_dcs_enter_sleep_mode_multi(&dsi_ctx);
 	mipi_dsi_msleep(&dsi_ctx, 120);
 
@@ -107,7 +103,29 @@ static int s6e8aa5x01_ams520kt01_prepare(struct drm_panel *panel)
 		return ret;
 	}
 
-	return 0;
+	return ret;
+}
+
+static int s6e8aa5x01_ams520kt01_enable(struct drm_panel *panel)
+{
+	struct s6e8aa5x01_ams520kt01 *ctx = to_s6e8aa5x01_ams520kt01(panel);
+	struct mipi_dsi_multi_context dsi_ctx = { .dsi = ctx->dsi };
+
+	mipi_dsi_dcs_set_display_on_multi(&dsi_ctx);
+
+	return dsi_ctx.accum_err;
+}
+
+static int s6e8aa5x01_ams520kt01_disable(struct drm_panel *panel)
+{
+	struct s6e8aa5x01_ams520kt01 *ctx = to_s6e8aa5x01_ams520kt01(panel);
+	struct mipi_dsi_multi_context dsi_ctx = { .dsi = ctx->dsi };
+
+	ctx->dsi->mode_flags &= ~MIPI_DSI_MODE_LPM;
+
+	mipi_dsi_dcs_set_display_off_multi(&dsi_ctx);
+
+	return dsi_ctx.accum_err;
 }
 
 static int s6e8aa5x01_ams520kt01_unprepare(struct drm_panel *panel)
@@ -150,6 +168,8 @@ static int s6e8aa5x01_ams520kt01_get_modes(struct drm_panel *panel,
 static const struct drm_panel_funcs s6e8aa5x01_ams520kt01_panel_funcs = {
 	.prepare = s6e8aa5x01_ams520kt01_prepare,
 	.unprepare = s6e8aa5x01_ams520kt01_unprepare,
+	.enable = s6e8aa5x01_ams520kt01_enable,
+	.disable = s6e8aa5x01_ams520kt01_disable,
 	.get_modes = s6e8aa5x01_ams520kt01_get_modes,
 };
 
@@ -211,7 +231,7 @@ static void s6e8aa5x01_ams520kt01_remove(struct mipi_dsi_device *dsi)
 }
 
 static const struct of_device_id s6e8aa5x01_ams520kt01_of_match[] = {
-	{ .compatible = "samsung,s6e8aa5x01-ams520kt01" }, // FIXME
+	{ .compatible = "samsung,s6e8aa5x01-ams520kt01" },
 	{ /* sentinel */ }
 };
 MODULE_DEVICE_TABLE(of, s6e8aa5x01_ams520kt01_of_match);
@@ -226,6 +246,6 @@ static struct mipi_dsi_driver s6e8aa5x01_ams520kt01_driver = {
 };
 module_mipi_dsi_driver(s6e8aa5x01_ams520kt01_driver);
 
-MODULE_AUTHOR("linux-mdss-dsi-panel-driver-generator <fix@me>"); // FIXME
+MODULE_AUTHOR("linux-mdss-dsi-panel-driver-generator");
 MODULE_DESCRIPTION("DRM driver for ss_dsi_panel_S6E8AA5X01_AMS520KT01_HD");
 MODULE_LICENSE("GPL");
