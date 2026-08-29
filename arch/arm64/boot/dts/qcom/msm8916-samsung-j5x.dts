@@ -123,6 +123,30 @@
 		       "0", "0", "-1";
 };
 
+&blsp_i2c4 {
+	status = "okay";
+
+	grip@28 {
+		compatible = "semtech,sx9310";
+		reg = <0x28>;
+
+		interrupt-parent = <&tlmm>;
+		interrupts = <51 IRQ_TYPE_LEVEL_LOW>;
+
+		pinctrl-0 = <&grip_int_default>;
+		pinctrl-names = "default";
+
+		#io-channel-cells = <1>;
+		semtech,cs0-ground;
+		semtech,combined-sensors = <3>;
+		semtech,resolution = "fine";
+		semtech,startup-sensor = <0>;
+		semtech,proxraw-strength = <8>;
+		semtech,avg-pos-strength = <256>;
+		wakeup-source;
+	};
+};
+
 &front_flash_led {
 	ctrl-gpios = <&tlmm 85 GPIO_ACTIVE_HIGH>;
 };
@@ -205,6 +229,14 @@
 
 	fuel_gauge_int_default: fuel-gauge-int-default-state {
 		pins = "gpio21";
+		function = "gpio";
+
+		drive-strength = <2>;
+		bias-disable;
+	};
+
+	grip_int_default: grip-int-default-state {
+		pins = "gpio51";
 		function = "gpio";
 
 		drive-strength = <2>;
