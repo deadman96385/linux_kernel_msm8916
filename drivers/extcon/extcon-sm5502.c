@@ -22,6 +22,9 @@
 
 #define DELAY_MS_DEFAULT		17000
 #define DELAY_MS_SM5703		2700
+#define DETECT_RETRY_MS			1000
+#define DETECT_RETRY_MAX		10
+#define SM5703_CONTROL_RESET_DEFAULT	0x1f
 
 struct muic_irq {
 	unsigned int irq;
@@ -59,6 +62,7 @@ struct sm5502_muic_info {
 	spinlock_t irq_lock;
 	struct work_struct irq_work;
 	unsigned int prev_cable_type;
+	unsigned int detect_retries;
 
 	/* Serializes cable detection, switch programming and extcon updates. */
 	struct mutex mutex;
@@ -86,6 +90,8 @@ struct sm5502_type {
 	unsigned int vbus_valid_reg;
 	unsigned int vbus_valid_mask;
 	unsigned int detect_delay_ms;
+	bool force_manual_path;
+	bool ack_irqs_before_enable;
 	int (*parse_irq)(struct sm5502_muic_info *info, int irq_type);
 };
 
@@ -444,7 +450,48 @@ static int sm5502_muic_set_path(struct sm5502_muic_info *info,
 		return -EINVAL;
 	}
 
+	/*
+	 * SM5703 powers up with automatic switching enabled.  MANUAL_SW1 writes
+	 * are ignored in that mode, so explicitly select the path just programmed.
+	 * Return to automatic detection after detach, matching the downstream
+	 * driver's detach sequence.
+	 */
+	if (info->type->force_manual_path) {
+		ret = regmap_update_bits(info->regmap, SM5502_REG_CONTROL,
+					 SM5502_REG_CONTROL_MANUAL_SW_MASK,
+					 attached ? 0 :
+					 SM5502_REG_CONTROL_MANUAL_SW_MASK);
+		if (ret) {
+			dev_err(info->dev, "cannot select MUIC switch mode\n");
+			return ret;
+		}
+	}
+
 	return 0;
+}
+
+static int sm5502_muic_unresolved_cable(struct sm5502_muic_info *info,
+					unsigned int adc,
+					unsigned int dev_type1)
+{
+	unsigned int vbus;
+	int ret;
+
+	if (!info->type->vbus_valid_mask)
+		return -EINVAL;
+
+	ret = regmap_read(info->regmap, info->type->vbus_valid_reg, &vbus);
+	if (ret)
+		return ret;
+
+	if (!(vbus & info->type->vbus_valid_mask))
+		return -ENODEV;
+
+	dev_dbg(info->dev,
+		"cable classification incomplete: adc=0x%x dev_type1=0x%x vbus=0x%x\n",
+		adc, dev_type1, vbus);
+
+	return -EAGAIN;
 }
 
 /* Return cable type of attached or detached accessories */
@@ -481,7 +528,8 @@ static int sm5502_muic_get_cable_type(struct sm5502_muic_info *info)
 			dev_dbg(info->dev,
 				"cannot identify the cable type: adc(0x%x), dev_type1(0x%x)\n",
 				adc, dev_type1);
-			return -EINVAL;
+			return sm5502_muic_unresolved_cable(info, adc,
+							       dev_type1);
 		}
 		break;
 	case SM5502_MUIC_ADC_SEND_END_BUTTON:
@@ -558,7 +606,8 @@ static int sm5502_muic_get_cable_type(struct sm5502_muic_info *info)
 			dev_dbg(info->dev,
 				"cannot identify the cable type: adc(0x%x), dev_type1(0x%x)\n",
 				adc, dev_type1);
-			return -EINVAL;
+			return sm5502_muic_unresolved_cable(info, adc,
+							       dev_type1);
 		}
 		break;
 	default:
@@ -655,7 +704,8 @@ static int sm5502_muic_cable_handler(struct sm5502_muic_info *info,
 }
 
 /* Reconcile extcon state with the final state reported by the MUIC. */
-static int sm5502_muic_update_cable(struct sm5502_muic_info *info)
+static int sm5502_muic_update_cable(struct sm5502_muic_info *info,
+				    bool force_path)
 {
 	int cable_type, ret;
 
@@ -668,8 +718,11 @@ static int sm5502_muic_update_cable(struct sm5502_muic_info *info)
 	if (!sm5502_muic_cable_supported(cable_type))
 		cable_type = SM5502_MUIC_ADC_GROUND;
 
-	if (cable_type == info->prev_cable_type)
+	if (cable_type == info->prev_cable_type) {
+		if (force_path && sm5502_muic_cable_supported(cable_type))
+			return sm5502_muic_cable_handler(info, cable_type, true);
 		return 0;
+	}
 
 	if (sm5502_muic_cable_supported(info->prev_cable_type)) {
 		ret = sm5502_muic_cable_handler(info, info->prev_cable_type, false);
@@ -716,11 +769,16 @@ static void sm5502_muic_irq_work(struct work_struct *work)
 			break;
 
 		mutex_lock(&info->mutex);
-		ret = sm5502_muic_update_cable(info);
+		ret = sm5502_muic_update_cable(info, false);
 		mutex_unlock(&info->mutex);
-		if (ret)
+		if (ret == -EAGAIN) {
+			mod_delayed_work(system_power_efficient_wq,
+					 &info->wq_detcable,
+					 msecs_to_jiffies(DETECT_RETRY_MS));
+		} else if (ret) {
 			dev_err(info->dev,
 				"failed to rescan MUIC cable state: %d\n", ret);
+		}
 	}
 }
 
@@ -837,14 +895,21 @@ static void sm5502_muic_detect_cable_wq(struct work_struct *work)
 	mutex_lock(&info->mutex);
 
 	/* Notify the state of connector cable or not  */
-	ret = sm5502_muic_update_cable(info);
-	if (ret < 0)
+	ret = sm5502_muic_update_cable(info, false);
+	if (ret == -EAGAIN && info->detect_retries < DETECT_RETRY_MAX) {
+		info->detect_retries++;
+		mod_delayed_work(system_power_efficient_wq, &info->wq_detcable,
+				 msecs_to_jiffies(DETECT_RETRY_MS));
+	} else if (ret < 0) {
 		dev_warn(info->dev, "failed to detect cable state\n");
+	} else {
+		info->detect_retries = 0;
+	}
 
 	mutex_unlock(&info->mutex);
 }
 
-static void sm5502_init_dev_type(struct sm5502_muic_info *info)
+static int sm5502_init_dev_type(struct sm5502_muic_info *info)
 {
 	unsigned int reg_data, vendor_id, version_id;
 	int i, ret;
@@ -854,7 +919,7 @@ static void sm5502_init_dev_type(struct sm5502_muic_info *info)
 	if (ret) {
 		dev_err(info->dev,
 			"failed to read DEVICE_ID register: %d\n", ret);
-		return;
+		return ret;
 	}
 
 	vendor_id = ((reg_data & SM5502_REG_DEVICE_ID_VENDOR_MASK) >>
@@ -873,8 +938,38 @@ static void sm5502_init_dev_type(struct sm5502_muic_info *info)
 			val |= ~info->type->reg_data[i].val;
 		else
 			val = info->type->reg_data[i].val;
-		regmap_write(info->regmap, info->type->reg_data[i].reg, val);
+		ret = regmap_write(info->regmap, info->type->reg_data[i].reg,
+				   val);
+		if (ret) {
+			dev_err(info->dev,
+				"failed to initialize register 0x%x: %d\n",
+				info->type->reg_data[i].reg, ret);
+			return ret;
+		}
 	}
+
+	return 0;
+}
+
+static int sm5502_ack_initial_irqs(struct sm5502_muic_info *info)
+{
+	unsigned int val;
+	int i, ret;
+
+	if (!info->type->ack_irqs_before_enable)
+		return 0;
+
+	/* Samsung reads both clear-on-read status registers twice at startup. */
+	for (i = 0; i < 2; i++) {
+		ret = regmap_read(info->regmap, SM5502_REG_INT1, &val);
+		if (ret)
+			return ret;
+		ret = regmap_read(info->regmap, SM5502_REG_INT2, &val);
+		if (ret)
+			return ret;
+	}
+
+	return 0;
 }
 
 static int sm5022_muic_i2c_probe(struct i2c_client *i2c)
@@ -907,12 +1002,25 @@ static int sm5022_muic_i2c_probe(struct i2c_client *i2c)
 	spin_lock_init(&info->irq_lock);
 
 	INIT_WORK(&info->irq_work, sm5502_muic_irq_work);
+	INIT_DELAYED_WORK(&info->wq_detcable, sm5502_muic_detect_cable_wq);
 
 	info->regmap = devm_regmap_init_i2c(i2c, &sm5502_muic_regmap_config);
 	if (IS_ERR(info->regmap)) {
 		ret = PTR_ERR(info->regmap);
 		dev_err(info->dev, "failed to allocate register map: %d\n", ret);
 		return ret;
+	}
+
+	if (info->type->ack_irqs_before_enable) {
+		/* Initialize and clear stale events before enabling SM5703 IRQs. */
+		ret = sm5502_init_dev_type(info);
+		if (ret)
+			return ret;
+
+		ret = sm5502_ack_initial_irqs(info);
+		if (ret)
+			return dev_err_probe(info->dev, ret,
+					     "failed to acknowledge initial interrupts\n");
 	}
 
 	/* Support irq domain for SM5502 MUIC device */
@@ -972,8 +1080,11 @@ static int sm5022_muic_i2c_probe(struct i2c_client *i2c)
 		return ret;
 	}
 
-	/* Initialize the MUIC before its first cable-state scan. */
-	sm5502_init_dev_type(info);
+	if (!info->type->ack_irqs_before_enable) {
+		ret = sm5502_init_dev_type(info);
+		if (ret)
+			return ret;
+	}
 
 	/*
 	 * Detect accessory after completing the initialization of platform
@@ -983,7 +1094,6 @@ static int sm5022_muic_i2c_probe(struct i2c_client *i2c)
 	 * After completing the booting of platform, the extcon provider
 	 * driver should notify cable state to upper layer.
 	 */
-	INIT_DELAYED_WORK(&info->wq_detcable, sm5502_muic_detect_cable_wq);
 	queue_delayed_work(system_power_efficient_wq, &info->wq_detcable,
 			   msecs_to_jiffies(info->type->detect_delay_ms));
 
@@ -1037,6 +1147,8 @@ static const struct sm5502_type sm5703_data = {
 	.vbus_valid_reg = SM5703_REG_VBUSINVALID,
 	.vbus_valid_mask = SM5703_REG_VBUSIN_VALID_MASK,
 	.detect_delay_ms = DELAY_MS_SM5703,
+	.force_manual_path = true,
+	.ack_irqs_before_enable = true,
 	.parse_irq = sm5703_parse_irq,
 };
 
@@ -1063,8 +1175,31 @@ static int sm5502_muic_resume(struct device *dev)
 {
 	struct i2c_client *i2c = to_i2c_client(dev);
 	struct sm5502_muic_info *info = i2c_get_clientdata(i2c);
+	unsigned int control;
+	int ret;
 
 	disable_irq_wake(info->irq);
+
+	mutex_lock(&info->mutex);
+	if (info->type->force_manual_path) {
+		ret = regmap_read(info->regmap, SM5502_REG_CONTROL, &control);
+		if (!ret && control == SM5703_CONTROL_RESET_DEFAULT)
+			ret = sm5502_init_dev_type(info);
+	} else {
+		ret = 0;
+	}
+
+	if (!ret)
+		ret = sm5502_muic_update_cable(info, true);
+	mutex_unlock(&info->mutex);
+
+	if (ret == -EAGAIN) {
+		info->detect_retries = 0;
+		mod_delayed_work(system_power_efficient_wq, &info->wq_detcable,
+				 msecs_to_jiffies(DETECT_RETRY_MS));
+	} else if (ret) {
+		dev_warn(info->dev, "failed to restore MUIC state: %d\n", ret);
+	}
 
 	return 0;
 }
