@@ -81,6 +81,13 @@
 		};
 	};
 
+	haptic {
+		compatible = "regulator-haptic";
+		haptic-supply = <&sm5703_ldo2>;
+		min-microvolt = <3300000>;
+		max-microvolt = <3300000>;
+	};
+
 	i2c_muic: i2c-muic {
 		compatible = "i2c-gpio";
 		sda-gpios = <&tlmm 105 (GPIO_ACTIVE_HIGH|GPIO_OPEN_DRAIN)>;
