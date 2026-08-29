@@ -46,14 +46,16 @@ properties:
         description: Flash LED maximum timeout.
 
       led-max-microamp:
-        maximum: 300000
-        description: Minimum Threshold for Timer protection
-          is defined internally (Maximum 300mA).
+        maximum: 500000
+        description: |
+          Maximum movie (torch) current. The movie current cannot exceed one
+          third of the maximum flash current.
 
       flash-max-microamp:
-        maximum: 300000
-        description: Flash LED maximum current
-          Formula - I(uA) = 15000000 / Rset.
+        maximum: 1500000
+        description: |
+          Flash LED maximum current. The maximum is set by the external RSET
+          resistor according to I(uA) = 15000000 / Rset(kOhm).
 
     additionalProperties: false
 
