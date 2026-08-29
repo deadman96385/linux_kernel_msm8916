@@ -56,6 +56,7 @@
 			linux,input-type = <EV_SW>;
 			linux,code = <SW_LID>;
 			linux,can-disable;
+			wakeup-source;
 		};
 	};
 
@@ -71,12 +72,15 @@
 			label = "Volume Up";
 			gpios = <&tlmm 107 GPIO_ACTIVE_LOW>;
 			linux,code = <KEY_VOLUMEUP>;
+			debounce-interval = <15>;
 		};
 
 		button-home {
 			label = "Home Key";
 			gpios = <&tlmm 109 GPIO_ACTIVE_LOW>;
 			linux,code = <KEY_HOMEPAGE>;
+			debounce-interval = <15>;
+			wakeup-source;
 		};
 	};
 
