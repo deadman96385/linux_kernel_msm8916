@@ -10,6 +10,7 @@
 #include <linux/gnss.h>
 #include <linux/kernel.h>
 #include <linux/module.h>
+#include <linux/mutex.h>
 #include <linux/net.h>
 #include <linux/platform_device.h>
 #include <linux/qrtr.h>
@@ -268,9 +269,17 @@ struct qcom_qmi_loc {
 	struct device *dev;
 	struct qmi_handle qmi;
 	struct gnss_device *gdev;
+	struct mutex rx_lock; /* serializes running state and RX */
 	bool running;
 	bool removing;
 };
+
+static void qcom_qmi_loc_set_running(struct qcom_qmi_loc *loc, bool running)
+{
+	mutex_lock(&loc->rx_lock);
+	loc->running = running;
+	mutex_unlock(&loc->rx_lock);
+}
 
 static int qcom_qmi_loc_request(struct qcom_qmi_loc *loc, u16 message_id,
 				size_t max_len, const struct qmi_elem_info *ei,
@@ -390,10 +399,10 @@ static int qcom_qmi_loc_open(struct gnss_device *gdev)
 		return ret;
 	}
 
-	WRITE_ONCE(loc->running, true);
+	qcom_qmi_loc_set_running(loc, true);
 	ret = qcom_qmi_loc_start(loc);
 	if (ret) {
-		WRITE_ONCE(loc->running, false);
+		qcom_qmi_loc_set_running(loc, false);
 		dev_err(loc->dev, "failed to start GNSS session: %d\n", ret);
 		return ret;
 	}
@@ -408,7 +417,7 @@ static void qcom_qmi_loc_close(struct gnss_device *gdev)
 	struct qcom_qmi_loc *loc = gnss_get_drvdata(gdev);
 	int ret;
 
-	WRITE_ONCE(loc->running, false);
+	qcom_qmi_loc_set_running(loc, false);
 	if (READ_ONCE(loc->removing))
 		return;
 
@@ -434,9 +443,6 @@ static void qcom_qmi_loc_nmea_ind(struct qmi_handle *qmi,
 	size_t len;
 	int inserted;
 
-	if (!READ_ONCE(loc->running))
-		return;
-
 	if (indication->expanded_nmea_valid && indication->expanded_nmea[0]) {
 		nmea = indication->expanded_nmea;
 		len = strnlen(nmea, QMI_LOC_EXPANDED_NMEA_MAX);
@@ -448,8 +454,16 @@ static void qcom_qmi_loc_nmea_ind(struct qmi_handle *qmi,
 	if (!len)
 		return;
 
+	mutex_lock(&loc->rx_lock);
+	if (!loc->running) {
+		mutex_unlock(&loc->rx_lock);
+		return;
+	}
+
 	inserted = gnss_insert_raw(loc->gdev,
 				   (const unsigned char *)nmea, len);
+	mutex_unlock(&loc->rx_lock);
+
 	if (inserted != len)
 		dev_warn_ratelimited(loc->dev, "dropped %zu bytes of NMEA data\n",
 				     len - inserted);
@@ -477,6 +491,7 @@ static int qcom_qmi_loc_probe(struct platform_device *pdev)
 		return -ENOMEM;
 
 	loc->dev = &pdev->dev;
+	mutex_init(&loc->rx_lock);
 
 	ret = qmi_handle_init(&loc->qmi, QMI_LOC_NMEA_IND_MAX_MSG_LEN, NULL,
 			      qcom_qmi_loc_handlers);
