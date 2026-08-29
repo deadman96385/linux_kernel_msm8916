@@ -294,6 +294,7 @@
 		touchscreen-size-x = <800>;
 		touchscreen-size-y = <1280>;
 		linux,keycodes = <KEY_APPSELECT KEY_BACK>;
+		extcon = <&muic>;
 
 		vcca-supply = <&reg_vdd_tsp>;
 		vdd-supply = <&pm8916_l5>;
