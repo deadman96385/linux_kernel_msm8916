@@ -34,6 +34,8 @@ properties:
       available or that a close/far proximity event has happened.
     maxItems: 1
 
+  wakeup-source: true
+
   vdd-supply:
     description: Main power supply
 
