@@ -441,8 +441,12 @@ static const struct power_supply_desc sm5703_charger_desc = {
 static int sm5703_apply_source_locked(struct sm5703_charger *charger,
 				      enum power_supply_usb_type type)
 {
+	int old_fast_ua = charger->fast_current_ua;
+	int old_input_ua = charger->input_current_ua;
+	bool old_source_online = charger->source_online;
+	enum power_supply_usb_type old_usb_type = charger->usb_type;
 	int input_ua, fast_ua;
-	int ret;
+	int ret, rollback_ret;
 
 	switch (type) {
 	case POWER_SUPPLY_USB_TYPE_SDP:
@@ -474,15 +478,31 @@ static int sm5703_apply_source_locked(struct sm5703_charger *charger,
 		return ret;
 
 	ret = sm5703_set_fast_current(charger, fast_ua);
-	if (ret)
+	if (ret) {
+		rollback_ret = sm5703_set_input_current(charger, old_input_ua);
+		if (rollback_ret)
+			dev_warn(charger->dev,
+				 "failed to restore input current: %d\n",
+				 rollback_ret);
 		return ret;
+	}
 
 	charger->source_online = true;
 	charger->usb_type = type;
 	ret = sm5703_apply_charge_enable_locked(charger);
 	if (ret) {
-		charger->source_online = false;
-		charger->usb_type = POWER_SUPPLY_USB_TYPE_UNKNOWN;
+		charger->source_online = old_source_online;
+		charger->usb_type = old_usb_type;
+		rollback_ret = sm5703_set_fast_current(charger, old_fast_ua);
+		if (rollback_ret)
+			dev_warn(charger->dev,
+				 "failed to restore fast-charge current: %d\n",
+				 rollback_ret);
+		rollback_ret = sm5703_set_input_current(charger, old_input_ua);
+		if (rollback_ret)
+			dev_warn(charger->dev,
+				 "failed to restore input current: %d\n",
+				 rollback_ret);
 		return ret;
 	}
 
@@ -612,10 +632,6 @@ static void sm5703_monitor_work(struct work_struct *work)
 	old_enabled = charger->hw_charge_enabled;
 	if (ret) {
 		charger->thermal_state = SM5703_THERMAL_UNKNOWN;
-		if (old_thermal == SM5703_THERMAL_UNKNOWN)
-			dev_warn_ratelimited(charger->dev,
-					     "charging stopped: fuel-gauge temperature unavailable (%d)\n",
-					     ret);
 	} else {
 		charger->thermal_state =
 			sm5703_update_thermal_state(charger, temp_decic);
@@ -657,6 +673,39 @@ static void sm5703_monitor_work(struct work_struct *work)
 			 msecs_to_jiffies(charger->monitor_interval_ms));
 }
 
+static int sm5703_get_usb_type(struct sm5703_charger *charger,
+			       enum power_supply_usb_type *type)
+{
+	int state;
+
+	state = extcon_get_state(charger->extcon, EXTCON_CHG_USB_DCP);
+	if (state < 0)
+		return state;
+	if (state > 0) {
+		*type = POWER_SUPPLY_USB_TYPE_DCP;
+		return 0;
+	}
+
+	state = extcon_get_state(charger->extcon, EXTCON_CHG_USB_CDP);
+	if (state < 0)
+		return state;
+	if (state > 0) {
+		*type = POWER_SUPPLY_USB_TYPE_CDP;
+		return 0;
+	}
+
+	state = extcon_get_state(charger->extcon, EXTCON_CHG_USB_SDP);
+	if (state < 0)
+		return state;
+	if (state > 0) {
+		*type = POWER_SUPPLY_USB_TYPE_SDP;
+		return 0;
+	}
+
+	*type = POWER_SUPPLY_USB_TYPE_UNKNOWN;
+	return 0;
+}
+
 static void sm5703_extcon_work(struct work_struct *work)
 {
 	struct sm5703_charger *charger =
@@ -664,12 +713,12 @@ static void sm5703_extcon_work(struct work_struct *work)
 	enum power_supply_usb_type type = POWER_SUPPLY_USB_TYPE_UNKNOWN;
 	int ret;
 
-	if (extcon_get_state(charger->extcon, EXTCON_CHG_USB_DCP) > 0)
-		type = POWER_SUPPLY_USB_TYPE_DCP;
-	else if (extcon_get_state(charger->extcon, EXTCON_CHG_USB_CDP) > 0)
-		type = POWER_SUPPLY_USB_TYPE_CDP;
-	else if (extcon_get_state(charger->extcon, EXTCON_CHG_USB_SDP) > 0)
-		type = POWER_SUPPLY_USB_TYPE_SDP;
+	ret = sm5703_get_usb_type(charger, &type);
+	if (ret) {
+		dev_warn_ratelimited(charger->dev,
+				     "failed to read USB source: %d\n", ret);
+		return;
+	}
 
 	mutex_lock(&charger->lock);
 	ret = sm5703_apply_source_locked(charger, type);
@@ -840,8 +889,12 @@ static int sm5703_hw_init(struct sm5703_charger *charger)
 	if (ret)
 		return ret;
 
-	return sm5703_set_fast_current(charger,
-				       charger->fast_current_max_ua);
+	ret = sm5703_set_fast_current(charger, charger->fast_current_max_ua);
+	if (ret)
+		return ret;
+
+	/* Keep a valid rollback target before the first extcon transition. */
+	return sm5703_set_input_current(charger, SM5703_INPUT_CURRENT_MIN_UA);
 }
 
 static int sm5703_get_battery_info(struct sm5703_charger *charger)
