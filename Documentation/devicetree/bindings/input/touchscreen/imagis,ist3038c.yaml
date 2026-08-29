@@ -27,6 +27,11 @@ properties:
   interrupts:
     maxItems: 1
 
+  extcon:
+    description: Optional USB connector provider. IST30XXC controllers use
+      its charger state to select the controller's charger-noise mode.
+    maxItems: 1
+
   vdd-supply:
     description: Power supply regulator for the chip
 
@@ -61,6 +66,17 @@ allOf:
     then:
       properties:
         linux,keycodes: false
+  - if:
+      not:
+        properties:
+          compatible:
+            contains:
+              enum:
+                - imagis,ist3032c
+                - imagis,ist3038c
+    then:
+      properties:
+        extcon: false
 
 required:
   - compatible
