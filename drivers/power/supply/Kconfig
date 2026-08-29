@@ -934,6 +934,15 @@ config BATTERY_RT5033
 	  The fuelgauge calculates and determines the battery state of charge
 	  according to battery open circuit voltage.
 
+config BATTERY_SM5703_FUEL_GAUGE
+	tristate "Silicon Mitus SM5703 fuel-gauge support"
+	depends on I2C
+	select REGMAP_I2C
+	help
+	  Say Y to enable the standalone fuel gauge found alongside the
+	  Silicon Mitus SM5703 PMIC. Battery model data must be supplied in
+	  the device tree.
+
 config CHARGER_RT5033
 	tristate "RT5033 battery charger support"
 	depends on MFD_RT5033
@@ -942,6 +951,14 @@ config CHARGER_RT5033
 	  This adds support for battery charger in Richtek RT5033 PMIC.
 	  The device supports pre-charge mode, fast charge mode and
 	  constant voltage mode.
+
+config CHARGER_SM5703
+	tristate "Silicon Mitus SM5703 charger support"
+	depends on MFD_SM5703
+	depends on EXTCON
+	help
+	  Say Y to enable the battery charger, USB source detection and
+	  automatic input-current limiting in the Silicon Mitus SM5703 PMIC.
 
 config CHARGER_RT9455
 	tristate "Richtek RT9455 battery charger driver"
