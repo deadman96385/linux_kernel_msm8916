@@ -5,6 +5,7 @@
 #include "msm8916-pm8916.dtsi"
 #include <dt-bindings/sound/apq8016-lpass.h>
 #include <dt-bindings/gpio/gpio.h>
+#include <dt-bindings/interrupt-controller/irq.h>
 
 / {
 	model = "Samsung Galaxy Tab E 9.6 (SM-T560NU)";
@@ -19,6 +20,17 @@
 
 	chosen {
 		stdout-path = "serial0";
+	};
+
+	battery: battery {
+		compatible = "simple-battery";
+		device-chemistry = "lithium-ion";
+		charge-full-design-microamp-hours = <5000000>;
+		voltage-min-design-microvolt = <3400000>;
+		voltage-max-design-microvolt = <4350000>;
+		constant-charge-current-max-microamp = <1500000>;
+		constant-charge-voltage-max-microvolt = <4350000>;
+		charge-term-current-microamp = <275000>;
 	};
 
 	reserved-memory {
@@ -121,6 +133,12 @@
 
 		pinctrl-0 = <&muic_int_default>;
 		pinctrl-names = "default";
+
+		usb_con: connector {
+			compatible = "usb-b-connector";
+			label = "micro-USB";
+			type = "micro";
+		};
 	};
 };
 
@@ -145,6 +163,122 @@
 
 		pinctrl-0 = <&accel_int_default>;
 		pinctrl-names = "default";
+	};
+};
+
+&blsp_i2c3 {
+	status = "okay";
+
+	sm5703: pmic@49 {
+		compatible = "siliconmitus,sm5703";
+		reg = <0x49>;
+
+		interrupt-parent = <&tlmm>;
+		interrupts = <1 IRQ_TYPE_EDGE_FALLING>;
+		reset-gpios = <&tlmm 36 GPIO_ACTIVE_LOW>;
+
+		pinctrl-0 = <&sm5703_default>;
+		pinctrl-names = "default";
+		wakeup-source;
+
+		regulators {
+			sm5703_buck: buck {
+				regulator-name = "cam_sensor_core_1p2";
+				regulator-min-microvolt = <1200000>;
+				regulator-max-microvolt = <1200000>;
+			};
+
+			sm5703_ldo1: ldo1 {
+				regulator-name = "cam_sensor_a2p8";
+				regulator-min-microvolt = <2800000>;
+				regulator-max-microvolt = <2800000>;
+			};
+
+			sm5703_ldo2: ldo2 {
+				regulator-name = "cam_vio";
+				regulator-min-microvolt = <1800000>;
+				regulator-max-microvolt = <1800000>;
+			};
+
+			sm5703_ldo3: ldo3 {
+				regulator-name = "vdd_motor";
+				regulator-min-microvolt = <1500000>;
+				regulator-max-microvolt = <3300000>;
+			};
+
+			sm5703_usbldo1: usbldo1 {
+				regulator-name = "usbldo1";
+				regulator-min-microvolt = <4800000>;
+				regulator-max-microvolt = <4800000>;
+				regulator-always-on;
+			};
+
+			sm5703_usbldo2: usbldo2 {
+				regulator-name = "usbldo2";
+				regulator-min-microvolt = <4800000>;
+				regulator-max-microvolt = <4800000>;
+			};
+
+			sm5703_vbus: vbus {
+				regulator-name = "usb_vbus";
+				regulator-min-microvolt = <5000000>;
+				regulator-max-microvolt = <5000000>;
+				regulator-max-microamp = <1200000>;
+			};
+		};
+
+		charger: charger {
+			compatible = "siliconmitus,sm5703-charger";
+			monitored-battery = <&battery>;
+			siliconmitus,usb-connector = <&usb_con>;
+			enable-gpios = <&tlmm 119 GPIO_ACTIVE_LOW>;
+			input-current-limit-microamp = <1000000>;
+			input-voltage-limit-microvolt = <4300000>;
+			siliconmitus,topoff-timer-minutes = <45>;
+			siliconmitus,boost-iq3-limit-1x;
+		};
+	};
+};
+
+&blsp_i2c4 {
+	status = "okay";
+
+	fuel_gauge: fuel-gauge@71 {
+		compatible = "siliconmitus,sm5703-fuel-gauge";
+		reg = <0x71>;
+
+		interrupt-parent = <&tlmm>;
+		interrupts = <121 IRQ_TYPE_EDGE_FALLING>;
+		pinctrl-0 = <&fuel_gauge_int_default>;
+		pinctrl-names = "default";
+		wakeup-source;
+
+		monitored-battery = <&battery>;
+		power-supplies = <&charger>;
+
+		siliconmitus,battery-table-0 =
+			<0x1400 0x1b99 0x1bfd 0x1cb5 0x1d65 0x1d9c 0x1dee 0x1e72
+			 0x1ee4 0x1f4d 0x1ff9 0x2077 0x2099 0x220a 0x2270 0x2399>;
+		siliconmitus,battery-table-1 =
+			<0x1400 0x1b99 0x1bfd 0x1cb5 0x1d65 0x1d9c 0x1dee 0x1e72
+			 0x1ee4 0x1f4d 0x1ff9 0x2077 0x2099 0x220a 0x2270 0x2399>;
+		siliconmitus,battery-table-2 =
+			<0x0000 0x0095 0x00e0 0x01b1 0x0327 0x076a 0x0bbd 0x18a5
+			 0x1fc5 0x22a1 0x29d0 0x2cad 0x2e13 0x381f 0x3a66 0x3a93>;
+		siliconmitus,rce-values = <0x0749 0x0580 0x0371>;
+		siliconmitus,dtcd-value = <1>;
+		siliconmitus,rs-values = <0x01ae 0x047a 0x3800 0x00a4>;
+		siliconmitus,vit-period = <0x350a>;
+		siliconmitus,mix-values = <0x0503 0x0004>;
+		siliconmitus,topoff-soc-values = <0 0x0101>;
+		siliconmitus,voltage-calibration = <0x8000>;
+		siliconmitus,current-calibration = <0x7085>;
+		siliconmitus,temperature-standard-celsius = <25>;
+		siliconmitus,temperature-offset-divisor = <10>;
+		siliconmitus,temperature-offset-calibration = <1>;
+		siliconmitus,charge-offset-calibration = <12>;
+		siliconmitus,fuel-alert-soc = <1>;
+		siliconmitus,voltage-alert-microvolt = <3125000>;
 	};
 };
 
@@ -288,6 +422,7 @@
 
 &usb {
 	extcon = <&muic>, <&muic>;
+	vbus-supply = <&sm5703_vbus>;
 	status = "okay";
 };
 
@@ -358,6 +493,13 @@
 		bias-disable;
 	};
 
+	fuel_gauge_int_default: fuel-gauge-int-default-state {
+		pins = "gpio121";
+		function = "gpio";
+		drive-strength = <2>;
+		bias-disable;
+	};
+
 	reg_lcd_en_default: reg-lcd-en-default-state {
 		pins = "gpio8";
 		function = "gpio";
@@ -367,6 +509,13 @@
 
 	reg_tsp_en_default: reg-tsp-en-default-state {
 		pins = "gpio73";
+		function = "gpio";
+		drive-strength = <2>;
+		bias-disable;
+	};
+
+	sm5703_default: sm5703-default-state {
+		pins = "gpio1", "gpio36", "gpio119";
 		function = "gpio";
 		drive-strength = <2>;
 		bias-disable;
