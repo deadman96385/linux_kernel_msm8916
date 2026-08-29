@@ -64,6 +64,12 @@ properties:
       Select the full boost-converter IQ3 current limit instead of 0.7 times
       the nominal limit.
 
+  siliconmitus,automatic-charge-stop:
+    type: boolean
+    description:
+      Let the charger automatically stop charging when the top-off condition
+      is satisfied.
+
   siliconmitus,poll-interval-ms:
     minimum: 1000
     maximum: 60000
