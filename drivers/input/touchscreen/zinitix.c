@@ -589,19 +589,23 @@ static int zinitix_start(struct bt541_ts_data *bt541)
 	if (error) {
 		dev_err(&bt541->client->dev,
 			"Error while sending power-on sequence: %d\n", error);
-		return error;
+		goto disable_regulators;
 	}
 
 	error = zinitix_init_touch(bt541);
 	if (error) {
 		dev_err(&bt541->client->dev,
 			"Error while configuring touch IC\n");
-		return error;
+		goto disable_regulators;
 	}
 
 	enable_irq(bt541->client->irq);
 
 	return 0;
+
+disable_regulators:
+	regulator_bulk_disable(ARRAY_SIZE(bt541->supplies), bt541->supplies);
+	return error;
 }
 
 static int zinitix_stop(struct bt541_ts_data *bt541)
