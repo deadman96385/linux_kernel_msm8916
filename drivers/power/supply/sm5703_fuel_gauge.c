@@ -97,6 +97,10 @@ struct sm5703_fg {
 	int technology;
 	int alert_soc;
 	int alert_voltage_uv;
+	u16 last_iocv;
+	bool last_iocv_valid;
+	bool initialized;
+	bool alerts_valid;
 };
 
 static const struct regmap_config sm5703_fg_regmap_config = {
@@ -176,6 +180,25 @@ static int sm5703_fg_read_soc(struct sm5703_fg *fg, int *capacity)
 	return 0;
 }
 
+static int sm5703_fg_read_ocv(struct sm5703_fg *fg, int *uv)
+{
+	unsigned int raw;
+	int ret;
+
+	ret = sm5703_fg_read(fg, SM5703_FG_REG_OCV, &raw);
+	if (ret)
+		return ret;
+
+	/* OCV uses 1/256 V units while IOCV_MAN uses 1/2048 V units. */
+	fg->last_iocv = (raw & SM5703_FG_VALUE_MASK) << 3;
+	fg->last_iocv_valid = true;
+	if (uv)
+		*uv = DIV_ROUND_CLOSEST((raw & SM5703_FG_VALUE_MASK) *
+					1000000, 256);
+
+	return 0;
+}
+
 static int sm5703_fg_trimmed_average(struct sm5703_fg *fg,
 				     unsigned int first,
 				     unsigned int last, int *average,
@@ -244,24 +267,16 @@ static int sm5703_fg_calculate_iocv(struct sm5703_fg *fg, u16 *iocv)
 	return 0;
 }
 
-static int sm5703_fg_write_model(struct sm5703_fg *fg, bool use_current_ocv)
+static int sm5703_fg_write_model(struct sm5703_fg *fg,
+				 const u16 *saved_iocv)
 {
 	struct sm5703_fg_model *model = &fg->model;
 	unsigned int control;
 	u16 iocv;
 	int ret, i, j;
 
-	if (use_current_ocv) {
-		int ocv_uv;
-
-		ret = sm5703_fg_read_voltage(fg, SM5703_FG_REG_OCV,
-					     &ocv_uv);
-		if (ret)
-			return ret;
-
-		/* IOCV_MAN uses 1/2048 V units, unlike the 1/256 V OCV. */
-		iocv = DIV_ROUND_CLOSEST_ULL((u64)ocv_uv * 256, 125000);
-	}
+	if (saved_iocv)
+		iocv = *saved_iocv;
 
 	ret = sm5703_fg_write(fg, SM5703_FG_REG_PARAM_CTRL,
 			      SM5703_FG_PARAM_UNLOCK);
@@ -351,13 +366,19 @@ static int sm5703_fg_write_model(struct sm5703_fg *fg, bool use_current_ocv)
 	if (ret)
 		return ret;
 
-	if (!use_current_ocv) {
+	if (!saved_iocv) {
 		ret = sm5703_fg_calculate_iocv(fg, &iocv);
 		if (ret)
 			return ret;
 	}
 
-	return sm5703_fg_write(fg, SM5703_FG_REG_IOCV_MAN, iocv);
+	ret = sm5703_fg_write(fg, SM5703_FG_REG_IOCV_MAN, iocv);
+	if (!ret) {
+		fg->last_iocv = iocv;
+		fg->last_iocv_valid = true;
+	}
+
+	return ret;
 
 out_lock:
 	sm5703_fg_write(fg, SM5703_FG_REG_PARAM_CTRL,
@@ -435,13 +456,14 @@ static int sm5703_fg_ensure_model(struct sm5703_fg *fg, bool verify)
 {
 	unsigned int control, status;
 	bool matches;
-	bool reset = false;
+	u16 saved_iocv;
 	int ret;
 
 	ret = sm5703_fg_read(fg, SM5703_FG_REG_OP_STATUS, &status);
 	if (ret)
 		return ret;
 	if ((status & 0xff) == SM5703_FG_INITIALIZED) {
+		fg->initialized = true;
 		if (!verify)
 			return 0;
 
@@ -451,22 +473,46 @@ static int sm5703_fg_ensure_model(struct sm5703_fg *fg, bool verify)
 
 		dev_warn(fg->dev,
 			 "battery model mismatch, reprogramming fuel gauge\n");
-		return sm5703_fg_write_model(fg, true);
+		ret = sm5703_fg_read_ocv(fg, NULL);
+		if (ret)
+			return ret;
+		fg->alerts_valid = false;
+		return sm5703_fg_write_model(fg, &fg->last_iocv);
+	}
+
+	/*
+	 * A running gauge that loses its initialized marker has suffered the
+	 * downstream driver's "surge reset" case.  Preserve the last OCV from
+	 * before the reset; the post-reset OCV register is not reliable enough
+	 * to seed SOC.  A gauge being initialized for the first time instead
+	 * uses its IOCV sample buffers, matching the stock cold-boot sequence.
+	 */
+	if (fg->initialized) {
+		if (!fg->last_iocv_valid) {
+			ret = sm5703_fg_read_ocv(fg, NULL);
+			if (ret)
+				return ret;
+		}
+		saved_iocv = fg->last_iocv;
 	}
 
 	ret = sm5703_fg_read(fg, SM5703_FG_REG_CNTL, &control);
 	if (ret)
 		return ret;
-	if (control == SM5703_FG_RESET_DEFAULT) {
+	if (fg->initialized && control == SM5703_FG_RESET_DEFAULT) {
 		ret = sm5703_fg_write(fg, SM5703_FG_REG_RESET,
 				      SM5703_FG_SW_RESET);
 		if (ret)
 			return ret;
 		msleep(200);
-		reset = true;
 	}
 
-	return sm5703_fg_write_model(fg, reset);
+	fg->alerts_valid = false;
+	ret = sm5703_fg_write_model(fg, fg->initialized ? &saved_iocv : NULL);
+	if (!ret)
+		fg->initialized = true;
+
+	return ret;
 }
 
 static int sm5703_fg_update_current_calibration(struct sm5703_fg *fg)
@@ -585,10 +631,17 @@ static int sm5703_fg_get_property(struct power_supply *psy,
 	case POWER_SUPPLY_PROP_CAPACITY:
 		/* A full table comparison is done at probe; poll reset state here. */
 		ret = sm5703_fg_ensure_model(fg, false);
+		if (!ret && !fg->alerts_valid) {
+			ret = sm5703_fg_init_alerts(fg);
+			if (!ret)
+				fg->alerts_valid = true;
+		}
 		if (!ret)
 			ret = sm5703_fg_update_current_calibration(fg);
 		if (!ret)
 			ret = sm5703_fg_read_soc(fg, &value->intval);
+		if (!ret)
+			sm5703_fg_read_ocv(fg, NULL);
 		break;
 	case POWER_SUPPLY_PROP_CAPACITY_ALERT_MIN:
 		value->intval = fg->alert_soc;
@@ -598,8 +651,7 @@ static int sm5703_fg_get_property(struct power_supply *psy,
 					     &value->intval);
 		break;
 	case POWER_SUPPLY_PROP_VOLTAGE_OCV:
-		ret = sm5703_fg_read_voltage(fg, SM5703_FG_REG_OCV,
-					     &value->intval);
+		ret = sm5703_fg_read_ocv(fg, &value->intval);
 		break;
 	case POWER_SUPPLY_PROP_VOLTAGE_MIN_DESIGN:
 		value->intval = fg->voltage_min_design_uv;
@@ -877,6 +929,10 @@ static int sm5703_fg_probe(struct i2c_client *client)
 	ret = sm5703_fg_ensure_model(fg, true);
 	if (!ret)
 		ret = sm5703_fg_init_alerts(fg);
+	if (!ret) {
+		fg->alerts_valid = true;
+		ret = sm5703_fg_read_ocv(fg, NULL);
+	}
 	mutex_unlock(&fg->lock);
 	if (ret)
 		return dev_err_probe(dev, ret,
