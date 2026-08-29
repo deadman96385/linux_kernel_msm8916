@@ -88,10 +88,17 @@ static const struct regmap_config sm5703_regmap_config = {
 
 static int sm5703_update_mode_locked(struct sm5703 *sm5703)
 {
+	unsigned int old_boost;
 	unsigned int mode;
+	int rollback_ret;
 	int ret;
 
 	if (sm5703->otg_enabled) {
+		ret = regmap_read(sm5703->regmap, SM5703_REG_FLEDCNTL6,
+				  &old_boost);
+		if (ret)
+			return ret;
+
 		ret = regmap_update_bits(sm5703->regmap, SM5703_REG_FLEDCNTL6,
 					 SM5703_FLEDCNTL6_BSTOUT_MASK,
 					 SM5703_FLEDCNTL6_BSTOUT_5P0V);
@@ -106,8 +113,19 @@ static int sm5703_update_mode_locked(struct sm5703 *sm5703)
 
 	ret = regmap_update_bits(sm5703->regmap, SM5703_REG_CNTL,
 				 SM5703_CNTL_OPERATION_MODE_MASK, mode);
-	if (ret)
+	if (ret) {
+		if (sm5703->otg_enabled) {
+			rollback_ret = regmap_update_bits(sm5703->regmap,
+							  SM5703_REG_FLEDCNTL6,
+							  SM5703_FLEDCNTL6_BSTOUT_MASK,
+							  old_boost);
+			if (rollback_ret)
+				dev_warn(sm5703->dev,
+					 "failed to restore boost voltage: %d\n",
+					 rollback_ret);
+		}
 		return ret;
+	}
 
 	if (!sm5703->otg_enabled) {
 		ret = regmap_update_bits(sm5703->regmap, SM5703_REG_FLEDCNTL6,

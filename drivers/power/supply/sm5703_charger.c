@@ -177,11 +177,11 @@ static int sm5703_set_charging_locked(struct sm5703_charger *charger,
 	int ret;
 
 	if (!enable) {
+		/* Drop the external enable first so an I2C error fails safe. */
+		gpiod_set_value_cansleep(charger->enable_gpio, 0);
 		ret = sm5703_set_charging(charger->sm5703, false);
-		if (!ret) {
-			gpiod_set_value_cansleep(charger->enable_gpio, 0);
+		if (!ret || charger->enable_gpio)
 			charger->hw_charge_enabled = false;
-		}
 		return ret;
 	}
 
