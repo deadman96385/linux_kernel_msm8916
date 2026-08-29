@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: GPL-2.0-only
-// Copyright (c) 2025 FIXME
+// Copyright (C) 2026 postmarketOS contributors
 // Generated with linux-mdss-dsi-panel-driver-generator from vendor device tree:
-//   Copyright (c) 2013, The Linux Foundation. All rights reserved. (FIXME)
+//   Copyright (c) 2013, The Linux Foundation. All rights reserved.
 
+#include <linux/array_size.h>
 #include <linux/delay.h>
 #include <linux/mod_devicetable.h>
 #include <linux/module.h>
@@ -16,7 +17,13 @@
 struct nt51017 {
 	struct drm_panel panel;
 	struct mipi_dsi_device *dsi;
-	struct regulator *supply;
+	struct regulator_bulk_data supplies[3];
+};
+
+static const char * const nt51017_supply_names[] = {
+	"vdd",
+	"vsp",
+	"vsn",
 };
 
 static inline struct nt51017 *to_nt51017(struct drm_panel *panel)
@@ -28,26 +35,63 @@ static int nt51017_on(struct nt51017 *ctx)
 {
 	struct mipi_dsi_multi_context dsi_ctx = { .dsi = ctx->dsi };
 
-	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0x83, 0x96);
-	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0x84, 0x69);
-	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0x92, 0x19);
-	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0x95, 0x00);
-	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0x83, 0x00);
-	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0x84, 0x00);
-	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0x90, 0x77);
-	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0x94, 0xff);
-	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0x96, 0xff);
-	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0x91, 0xfd);
-	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0x90, 0x77);
+	mipi_dsi_dcs_write_long_seq_multi(&dsi_ctx, 0x83, 0x96);
+	mipi_dsi_dcs_write_long_seq_multi(&dsi_ctx, 0x84, 0x69);
+	mipi_dsi_dcs_write_long_seq_multi(&dsi_ctx, 0x92, 0x19);
+	mipi_dsi_dcs_write_long_seq_multi(&dsi_ctx, 0x95, 0x00);
+	mipi_dsi_dcs_write_long_seq_multi(&dsi_ctx, 0x83, 0x00);
+	mipi_dsi_dcs_write_long_seq_multi(&dsi_ctx, 0x84, 0x00);
+	mipi_dsi_dcs_write_long_seq_multi(&dsi_ctx, 0x90, 0x77);
+	mipi_dsi_dcs_write_long_seq_multi(&dsi_ctx, 0x94, 0xff);
+	mipi_dsi_dcs_write_long_seq_multi(&dsi_ctx, 0x96, 0xff);
+	mipi_dsi_dcs_write_long_seq_multi(&dsi_ctx, 0x91, 0xbd);
+	mipi_dsi_dcs_write_long_seq_multi(&dsi_ctx, 0x90, 0x77);
 
 	return dsi_ctx.accum_err;
 }
 
-static int nt51017_off(struct nt51017 *ctx)
+static int nt51017_enable_supplies(struct nt51017 *ctx)
 {
-	struct mipi_dsi_multi_context dsi_ctx = { .dsi = ctx->dsi };
+	struct device *dev = &ctx->dsi->dev;
+	unsigned int i;
+	int ret;
 
-	return dsi_ctx.accum_err;
+	for (i = 0; i < ARRAY_SIZE(ctx->supplies); i++) {
+		ret = regulator_enable(ctx->supplies[i].consumer);
+		if (ret) {
+			dev_err(dev, "Failed to enable %s supply: %d\n",
+				ctx->supplies[i].supply, ret);
+			goto disable_supplies;
+		}
+
+		usleep_range(1500, 2000);
+	}
+
+	return 0;
+
+disable_supplies:
+	while (i--) {
+		regulator_disable(ctx->supplies[i].consumer);
+		usleep_range(1500, 2000);
+	}
+
+	return ret;
+}
+
+static void nt51017_disable_supplies(struct nt51017 *ctx)
+{
+	struct device *dev = &ctx->dsi->dev;
+	unsigned int i = ARRAY_SIZE(ctx->supplies);
+	int ret;
+
+	while (i--) {
+		ret = regulator_disable(ctx->supplies[i].consumer);
+		if (ret)
+			dev_err(dev, "Failed to disable %s supply: %d\n",
+				ctx->supplies[i].supply, ret);
+
+		usleep_range(1500, 2000);
+	}
 }
 
 static int nt51017_prepare(struct drm_panel *panel)
@@ -56,18 +100,16 @@ static int nt51017_prepare(struct drm_panel *panel)
 	struct device *dev = &ctx->dsi->dev;
 	int ret;
 
-	ret = regulator_enable(ctx->supply);
-	if (ret < 0) {
-		dev_err(dev, "Failed to enable regulator: %d\n", ret);
+	ret = nt51017_enable_supplies(ctx);
+	if (ret)
 		return ret;
-	}
 
 	msleep(30);
 
 	ret = nt51017_on(ctx);
 	if (ret < 0) {
 		dev_err(dev, "Failed to initialize panel: %d\n", ret);
-		regulator_disable(ctx->supply);
+		nt51017_disable_supplies(ctx);
 		return ret;
 	}
 
@@ -77,14 +119,11 @@ static int nt51017_prepare(struct drm_panel *panel)
 static int nt51017_unprepare(struct drm_panel *panel)
 {
 	struct nt51017 *ctx = to_nt51017(panel);
-	struct device *dev = &ctx->dsi->dev;
-	int ret;
 
-	ret = nt51017_off(ctx);
-	if (ret < 0)
-		dev_err(dev, "Failed to un-initialize panel: %d\n", ret);
+	nt51017_disable_supplies(ctx);
 
-	regulator_disable(ctx->supply);
+	/* Allow the backlight and panel bias rails to discharge fully. */
+	msleep(100);
 
 	return 0;
 }
@@ -120,6 +159,7 @@ static int nt51017_probe(struct mipi_dsi_device *dsi)
 {
 	struct device *dev = &dsi->dev;
 	struct nt51017 *ctx;
+	unsigned int i;
 	int ret;
 
 	ctx = devm_drm_panel_alloc(dev, struct nt51017, panel,
@@ -128,10 +168,14 @@ static int nt51017_probe(struct mipi_dsi_device *dsi)
 	if (IS_ERR(ctx))
 		return PTR_ERR(ctx);
 
-	ctx->supply = devm_regulator_get(dev, "lcd");
-	if (IS_ERR(ctx->supply))
-		return dev_err_probe(dev, PTR_ERR(ctx->supply),
-				     "Failed to get lcd regulator\n");
+	for (i = 0; i < ARRAY_SIZE(ctx->supplies); i++)
+		ctx->supplies[i].supply = nt51017_supply_names[i];
+
+	ret = devm_regulator_bulk_get(dev, ARRAY_SIZE(ctx->supplies),
+				      ctx->supplies);
+	if (ret)
+		return dev_err_probe(dev, ret,
+				     "Failed to get panel regulators\n");
 
 	ctx->dsi = dsi;
 	mipi_dsi_set_drvdata(dsi, ctx);
@@ -174,7 +218,7 @@ static void nt51017_remove(struct mipi_dsi_device *dsi)
 }
 
 static const struct of_device_id nt51017_of_match[] = {
-	{ .compatible = "samsung,nt51017-b4p096wx5vp09" }, // FIXME
+	{ .compatible = "boe,tv096wxm-nh0" },
 	{ /* sentinel */ }
 };
 MODULE_DEVICE_TABLE(of, nt51017_of_match);
@@ -183,12 +227,12 @@ static struct mipi_dsi_driver nt51017_driver = {
 	.probe = nt51017_probe,
 	.remove = nt51017_remove,
 	.driver = {
-		.name = "panel-samsung-nt51017-b4p096wx5vp09",
+		.name = "panel-boe-tv096wxm-nh0",
 		.of_match_table = nt51017_of_match,
 	},
 };
 module_mipi_dsi_driver(nt51017_driver);
 
-MODULE_AUTHOR("linux-mdss-dsi-panel-driver-generator <fix@me>"); // FIXME
-MODULE_DESCRIPTION("DRM driver for NT51017 wxga video mode dsi panel");
+MODULE_AUTHOR("postmarketOS contributors");
+MODULE_DESCRIPTION("DRM driver for the BOE TV096WXM-NH0 panel");
 MODULE_LICENSE("GPL");
