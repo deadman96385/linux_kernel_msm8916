@@ -1,0 +1,71 @@
+# SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
+%YAML 1.2
+---
+$id: http://devicetree.org/schemas/display/panel/boe,tv096wxm-nh0.yaml#
+$schema: http://devicetree.org/meta-schemas/core.yaml#
+
+title: BOE TV096WXM-NH0 DSI Display Panel
+
+maintainers:
+  - postmarketOS Kernel maintainers <kernel@postmarketos.org>
+
+description:
+  The TV096WXM-NH0 is a 9.6-inch 800x1280 TFT LCD panel with an
+  integrated Novatek NT51017 controller and a four-lane MIPI DSI interface.
+
+allOf:
+  - $ref: panel-common.yaml#
+
+properties:
+  compatible:
+    const: boe,tv096wxm-nh0
+
+  reg:
+    maxItems: 1
+
+  backlight: true
+
+  vdd-supply:
+    description: 3.3 V panel supply
+
+  vsp-supply:
+    description: Positive panel bias supply
+
+  vsn-supply:
+    description: Negative panel bias supply
+
+  port: true
+
+required:
+  - compatible
+  - reg
+  - backlight
+  - vdd-supply
+  - vsp-supply
+  - vsn-supply
+
+additionalProperties: false
+
+examples:
+  - |
+    dsi {
+        #address-cells = <1>;
+        #size-cells = <0>;
+
+        panel@0 {
+            compatible = "boe,tv096wxm-nh0";
+            reg = <0>;
+
+            backlight = <&backlight>;
+            vdd-supply = <&panel_vdd>;
+            vsp-supply = <&panel_vsp>;
+            vsn-supply = <&panel_vsn>;
+
+            port {
+                panel_in: endpoint {
+                    remote-endpoint = <&dsi_out>;
+                };
+            };
+        };
+    };
+...
