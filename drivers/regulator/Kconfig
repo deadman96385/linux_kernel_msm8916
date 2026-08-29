@@ -1311,6 +1311,13 @@ config REGULATOR_RT5033
 	  RT5033 PMIC. The device supports multiple regulators like
 	  current source, LDO and Buck.
 
+config REGULATOR_SM5703
+	tristate "Silicon Mitus SM5703 regulators"
+	depends on MFD_SM5703
+	help
+	  This adds support for the buck, LDO, fixed USB LDO and USB VBUS
+	  regulators in the Silicon Mitus SM5703 PMIC.
+
 config REGULATOR_RT5120
 	tristate "Richtek RT5120 PMIC Regulators"
 	depends on MFD_RT5120
