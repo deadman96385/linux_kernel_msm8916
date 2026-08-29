@@ -1124,11 +1124,6 @@ static int sm5703_charger_probe(struct platform_device *pdev)
 		return dev_err_probe(charger->dev, ret,
 				     "failed to initialize charger\n");
 
-	ret = devm_add_action_or_reset(charger->dev, sm5703_charger_stop,
-				       charger);
-	if (ret)
-		return ret;
-
 	ret = sm5703_request_irqs(pdev, charger);
 	if (ret)
 		return dev_err_probe(charger->dev, ret,
@@ -1144,6 +1139,12 @@ static int sm5703_charger_probe(struct platform_device *pdev)
 	if (ret)
 		return dev_err_probe(charger->dev, ret,
 				     "failed to register extcon notifier\n");
+
+	/* Drain work before managed notifier and IRQ resources are released. */
+	ret = devm_add_action_or_reset(charger->dev, sm5703_charger_stop,
+				       charger);
+	if (ret)
+		return ret;
 
 	/* Handle a cable that was already attached before this driver probed. */
 	mod_delayed_work(system_freezable_wq, &charger->monitor_work, 0);
