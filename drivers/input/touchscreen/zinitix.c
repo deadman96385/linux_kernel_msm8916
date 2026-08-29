@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: GPL-2.0-only
 
 #include <linux/delay.h>
+#include <linux/devm-helpers.h>
+#include <linux/extcon.h>
 #include <linux/i2c.h>
 #include <linux/input.h>
 #include <linux/input/mt.h>
@@ -13,6 +15,7 @@
 #include <linux/property.h>
 #include <linux/regulator/consumer.h>
 #include <linux/slab.h>
+#include <linux/workqueue.h>
 
 /* Register Map */
 
@@ -164,6 +167,13 @@ struct touch_event_mode2 {
 
 struct zinitix_chip_info {
 	u8 default_touch_mode;
+	u16 power_on_delay_ms;
+	u16 firmware_on_delay_ms;
+	u16 read_delay_us;
+	u16 post_transaction_delay_us;
+	u16 firmware_checksum;
+	bool has_usb_detect;
+	bool needs_second_reset;
 };
 
 struct bt541_ts_data {
@@ -171,6 +181,10 @@ struct bt541_ts_data {
 	struct input_dev *input_dev;
 	struct touchscreen_properties prop;
 	struct regulator_bulk_data supplies[2];
+	struct extcon_dev *extcon;
+	struct notifier_block extcon_nb;
+	struct work_struct extcon_work;
+	const struct zinitix_chip_info *chip_info;
 	u32 zinitix_mode;
 	u32 keycodes[MAX_SUPPORTED_BUTTON_NUM];
 	int num_keycodes;
@@ -180,6 +194,22 @@ struct bt541_ts_data {
 	u16 regdata_version;
 	u16 icon_status_reg;
 };
+
+static void zinitix_read_delay(struct i2c_client *client)
+{
+	struct bt541_ts_data *bt541 = i2c_get_clientdata(client);
+
+	if (bt541->chip_info)
+		udelay(bt541->chip_info->read_delay_us);
+}
+
+static void zinitix_post_transaction_delay(struct i2c_client *client)
+{
+	struct bt541_ts_data *bt541 = i2c_get_clientdata(client);
+
+	if (bt541->chip_info)
+		udelay(bt541->chip_info->post_transaction_delay_us);
+}
 
 static int zinitix_read_data(struct i2c_client *client,
 			     u16 reg, void *values, size_t length)
@@ -191,10 +221,12 @@ static int zinitix_read_data(struct i2c_client *client,
 	ret = i2c_master_send(client, (u8 *)&reg_le, sizeof(reg_le));
 	if (ret != sizeof(reg_le))
 		return ret < 0 ? ret : -EIO;
+	zinitix_read_delay(client);
 
 	ret = i2c_master_recv(client, (u8 *)values, length);
 	if (ret != length)
 		return ret < 0 ? ret : -EIO;
+	zinitix_post_transaction_delay(client);
 
 	return 0;
 }
@@ -207,6 +239,7 @@ static int zinitix_recv_data(struct i2c_client *client, void *values,
 	ret = i2c_master_recv(client, values, length);
 	if (ret != length)
 		return ret < 0 ? ret : -EIO;
+	zinitix_post_transaction_delay(client);
 
 	return 0;
 }
@@ -219,6 +252,7 @@ static int zinitix_write_u16(struct i2c_client *client, u16 reg, u16 value)
 	ret = i2c_master_send(client, (u8 *)packet, sizeof(packet));
 	if (ret != sizeof(packet))
 		return ret < 0 ? ret : -EIO;
+	zinitix_post_transaction_delay(client);
 
 	return 0;
 }
@@ -231,21 +265,94 @@ static int zinitix_write_cmd(struct i2c_client *client, u16 reg)
 	ret = i2c_master_send(client, (u8 *)&reg_le, sizeof(reg_le));
 	if (ret != sizeof(reg_le))
 		return ret < 0 ? ret : -EIO;
+	zinitix_post_transaction_delay(client);
 
 	return 0;
 }
 
-static u16 zinitix_get_u16_reg(struct bt541_ts_data *bt541, u16 vreg)
+static int zinitix_set_usb_detect(struct bt541_ts_data *bt541)
 {
+	static const unsigned int charger_cables[] = {
+		EXTCON_CHG_USB_SDP,
+		EXTCON_CHG_USB_CDP,
+		EXTCON_CHG_USB_DCP,
+	};
 	struct i2c_client *client = bt541->client;
+	unsigned int value;
+	__le16 raw;
+	bool connected = false;
 	int error;
-	__le16 val;
+	int i;
 
-	error = zinitix_read_data(client, vreg, (void *)&val, 2);
+	for (i = 0; i < ARRAY_SIZE(charger_cables); i++) {
+		error = extcon_get_state(bt541->extcon, charger_cables[i]);
+		if (error < 0)
+			return error;
+		if (error > 0) {
+			connected = true;
+			break;
+		}
+	}
+
+	error = zinitix_read_data(client, ZINITIX_USB_DETECT, &raw, sizeof(raw));
 	if (error)
-		return U8_MAX;
+		return error;
 
-	return le16_to_cpu(val);
+	value = le16_to_cpu(raw);
+	if (!!(value & BIT(0)) == connected)
+		return 0;
+
+	if (connected)
+		value |= BIT(0);
+	else
+		value &= ~BIT(0);
+
+	error = zinitix_write_u16(client, ZINITIX_USB_DETECT, value);
+	if (!error)
+		dev_dbg(&client->dev, "USB charger mode %s\n",
+			connected ? "enabled" : "disabled");
+
+	return error;
+}
+
+static void zinitix_extcon_work(struct work_struct *work)
+{
+	struct bt541_ts_data *bt541 = container_of(work, struct bt541_ts_data,
+						   extcon_work);
+	int error = 0;
+
+	mutex_lock(&bt541->input_dev->mutex);
+	if (input_device_enabled(bt541->input_dev))
+		error = zinitix_set_usb_detect(bt541);
+	mutex_unlock(&bt541->input_dev->mutex);
+
+	if (error)
+		dev_warn_ratelimited(&bt541->client->dev,
+				     "Failed to update USB charger mode: %d\n",
+				     error);
+}
+
+static int zinitix_extcon_notifier(struct notifier_block *nb,
+				   unsigned long event, void *ptr)
+{
+	struct bt541_ts_data *bt541 = container_of(nb, struct bt541_ts_data,
+						   extcon_nb);
+
+	schedule_work(&bt541->extcon_work);
+	return NOTIFY_OK;
+}
+
+static int zinitix_read_u16(struct bt541_ts_data *bt541, u16 reg, u16 *value)
+{
+	__le16 raw;
+	int error;
+
+	error = zinitix_read_data(bt541->client, reg, &raw, sizeof(raw));
+	if (error)
+		return error;
+
+	*value = le16_to_cpu(raw);
+	return 0;
 }
 
 static int zinitix_init_touch(struct bt541_ts_data *bt541)
@@ -261,17 +368,36 @@ static int zinitix_init_touch(struct bt541_ts_data *bt541)
 		return error;
 	}
 
+	if (bt541->chip_info && bt541->chip_info->needs_second_reset) {
+		error = zinitix_write_u16(client, ZINITIX_INT_ENABLE_FLAG, 0);
+		if (error)
+			return error;
+
+		error = zinitix_write_cmd(client, ZINITIX_SWRESET_CMD);
+		if (error)
+			return error;
+	}
+
 	/*
 	 * Read and cache the chip revision and firmware version the first time
 	 * we get here.
 	 */
 	if (!bt541->have_versioninfo) {
-		bt541->chip_revision = zinitix_get_u16_reg(bt541,
-						ZINITIX_CHIP_REVISION);
-		bt541->firmware_version = zinitix_get_u16_reg(bt541,
-						ZINITIX_FIRMWARE_VERSION);
-		bt541->regdata_version = zinitix_get_u16_reg(bt541,
-						ZINITIX_DATA_VERSION_REG);
+		error = zinitix_read_u16(bt541, ZINITIX_CHIP_REVISION,
+					 &bt541->chip_revision);
+		if (error)
+			return error;
+
+		error = zinitix_read_u16(bt541, ZINITIX_FIRMWARE_VERSION,
+					 &bt541->firmware_version);
+		if (error)
+			return error;
+
+		error = zinitix_read_u16(bt541, ZINITIX_DATA_VERSION_REG,
+					 &bt541->regdata_version);
+		if (error)
+			return error;
+
 		bt541->have_versioninfo = true;
 
 		dev_dbg(&client->dev,
@@ -388,8 +514,12 @@ static int zinitix_init_regulators(struct bt541_ts_data *bt541)
 
 static int zinitix_send_power_on_sequence(struct bt541_ts_data *bt541)
 {
+	unsigned int firmware_on_delay_ms = FIRMWARE_ON_DELAY;
 	int error;
 	struct i2c_client *client = bt541->client;
+
+	if (bt541->chip_info && bt541->chip_info->firmware_on_delay_ms)
+		firmware_on_delay_ms = bt541->chip_info->firmware_on_delay_ms;
 
 	error = zinitix_write_u16(client, 0xc000, 0x0001);
 	if (error) {
@@ -421,18 +551,42 @@ static int zinitix_send_power_on_sequence(struct bt541_ts_data *bt541)
 			"Failed to send power sequence (program start)\n");
 		return error;
 	}
-	msleep(FIRMWARE_ON_DELAY);
+	msleep(firmware_on_delay_ms);
 
+	return 0;
+}
+
+static int zinitix_check_firmware(struct bt541_ts_data *bt541)
+{
+	u16 checksum;
+	int error;
+
+	if (!bt541->chip_info || !bt541->chip_info->firmware_checksum)
+		return 0;
+
+	error = zinitix_read_u16(bt541, ZINITIX_CHECKSUM_RESULT, &checksum);
+	if (error)
+		return error;
+
+	if (checksum != bt541->chip_info->firmware_checksum) {
+		dev_err(&bt541->client->dev,
+			"Firmware checksum mismatch: got %#06x, expected %#06x\n",
+			checksum, bt541->chip_info->firmware_checksum);
+		return -EILSEQ;
+	}
+
+	dev_dbg(&bt541->client->dev, "firmware checksum %#06x\n", checksum);
 	return 0;
 }
 
 static void zinitix_report_finger(struct bt541_ts_data *bt541, int slot,
 				  const struct point_coord *p, bool palm)
 {
+	bool active;
 	u16 x, y;
+	u8 width;
 
-	if (unlikely(!(p->sub_status &
-		       (SUB_BIT_UP | SUB_BIT_DOWN | SUB_BIT_MOVE)))) {
+	if (unlikely(!(p->sub_status & (SUB_BIT_EXIST | SUB_BIT_UP)))) {
 		dev_dbg(&bt541->client->dev, "unknown finger event %#02x\n",
 			p->sub_status);
 		return;
@@ -440,22 +594,41 @@ static void zinitix_report_finger(struct bt541_ts_data *bt541, int slot,
 
 	x = le16_to_cpu(p->x);
 	y = le16_to_cpu(p->y);
+	width = max_t(u8, p->width, 1);
+	active = (p->sub_status & SUB_BIT_EXIST) &&
+		 !(p->sub_status & SUB_BIT_UP);
 
 	input_mt_slot(bt541->input_dev, slot);
 	if (input_mt_report_slot_state(bt541->input_dev,
 				       palm ? MT_TOOL_PALM : MT_TOOL_FINGER,
-				       !(p->sub_status & SUB_BIT_UP))) {
+				       active)) {
 		touchscreen_report_pos(bt541->input_dev,
 				       &bt541->prop, x, y, true);
 		input_report_abs(bt541->input_dev,
-				 ABS_MT_TOUCH_MAJOR, p->width);
+				 ABS_MT_TOUCH_MAJOR, width);
 		dev_dbg(&bt541->client->dev, "finger %d %s (%u, %u)\n",
-			slot, p->sub_status & SUB_BIT_DOWN ? "down" : "move",
+			slot, p->sub_status & SUB_BIT_DOWN ? "down" :
+			p->sub_status & SUB_BIT_MOVE ? "move" : "active",
 			x, y);
 	} else {
 		dev_dbg(&bt541->client->dev, "finger %d up (%u, %u)\n",
 			slot, x, y);
 	}
+}
+
+static void zinitix_release_inputs(struct bt541_ts_data *bt541)
+{
+	int i;
+
+	for (i = 0; i < MAX_SUPPORTED_FINGER_NUM; i++) {
+		input_mt_slot(bt541->input_dev, i);
+		input_mt_report_slot_state(bt541->input_dev, MT_TOOL_FINGER, false);
+	}
+	for (i = 0; i < bt541->num_keycodes; i++)
+		input_report_key(bt541->input_dev, bt541->keycodes[i], 0);
+
+	input_mt_sync_frame(bt541->input_dev);
+	input_sync(bt541->input_dev);
 }
 
 static int zinitix_read_mode1_event(struct bt541_ts_data *bt541,
@@ -573,7 +746,11 @@ out:
 
 static int zinitix_start(struct bt541_ts_data *bt541)
 {
+	unsigned int power_on_delay_ms = CHIP_ON_DELAY;
 	int error;
+
+	if (bt541->chip_info && bt541->chip_info->power_on_delay_ms)
+		power_on_delay_ms = bt541->chip_info->power_on_delay_ms;
 
 	error = regulator_bulk_enable(ARRAY_SIZE(bt541->supplies),
 				      bt541->supplies);
@@ -583,7 +760,7 @@ static int zinitix_start(struct bt541_ts_data *bt541)
 		return error;
 	}
 
-	msleep(CHIP_ON_DELAY);
+	msleep(power_on_delay_ms);
 
 	error = zinitix_send_power_on_sequence(bt541);
 	if (error) {
@@ -592,11 +769,25 @@ static int zinitix_start(struct bt541_ts_data *bt541)
 		goto disable_regulators;
 	}
 
+	error = zinitix_check_firmware(bt541);
+	if (error) {
+		dev_err(&bt541->client->dev,
+			"Failed to validate touch firmware: %d\n", error);
+		goto disable_regulators;
+	}
+
 	error = zinitix_init_touch(bt541);
 	if (error) {
 		dev_err(&bt541->client->dev,
 			"Error while configuring touch IC\n");
 		goto disable_regulators;
+	}
+
+	if (bt541->extcon) {
+		error = zinitix_set_usb_detect(bt541);
+		if (error)
+			dev_warn(&bt541->client->dev,
+				 "Failed to set USB charger mode: %d\n", error);
 	}
 
 	enable_irq(bt541->client->irq);
@@ -613,6 +804,12 @@ static int zinitix_stop(struct bt541_ts_data *bt541)
 	int error;
 
 	disable_irq(bt541->client->irq);
+	zinitix_release_inputs(bt541);
+
+	error = zinitix_write_cmd(bt541->client, ZINITIX_SLEEP_CMD);
+	if (error)
+		dev_dbg(&bt541->client->dev,
+			"Failed to send sleep command: %d\n", error);
 
 	error = regulator_bulk_disable(ARRAY_SIZE(bt541->supplies),
 				       bt541->supplies);
@@ -702,7 +899,6 @@ static int zinitix_init_input_dev(struct bt541_ts_data *bt541)
 
 static int zinitix_ts_probe(struct i2c_client *client)
 {
-	const struct zinitix_chip_info *chip_info;
 	struct bt541_ts_data *bt541;
 	int error;
 
@@ -717,6 +913,7 @@ static int zinitix_ts_probe(struct i2c_client *client)
 		return -ENOMEM;
 
 	bt541->client = client;
+	bt541->chip_info = i2c_get_match_data(client);
 	i2c_set_clientdata(client, bt541);
 
 	error = zinitix_init_regulators(bt541);
@@ -760,12 +957,12 @@ static int zinitix_ts_probe(struct i2c_client *client)
 		}
 	}
 
-	chip_info = i2c_get_match_data(client);
 	error = device_property_read_u32(&client->dev, "zinitix,mode",
 					 &bt541->zinitix_mode);
 	if (error < 0) {
-		bt541->zinitix_mode = chip_info ? chip_info->default_touch_mode :
-						 DEFAULT_TOUCH_POINT_MODE;
+		bt541->zinitix_mode = bt541->chip_info ?
+					bt541->chip_info->default_touch_mode :
+					DEFAULT_TOUCH_POINT_MODE;
 	}
 
 	if (bt541->zinitix_mode != 1 && bt541->zinitix_mode != 2) {
@@ -775,11 +972,34 @@ static int zinitix_ts_probe(struct i2c_client *client)
 		return -EINVAL;
 	}
 
+	if (bt541->chip_info && bt541->chip_info->has_usb_detect &&
+	    device_property_present(&client->dev, "extcon")) {
+		bt541->extcon = extcon_get_edev_by_phandle(&client->dev, 0);
+		if (IS_ERR(bt541->extcon))
+			return dev_err_probe(&client->dev, PTR_ERR(bt541->extcon),
+					     "Failed to get USB extcon\n");
+	}
+
 	error = zinitix_init_input_dev(bt541);
 	if (error) {
 		dev_err(&client->dev,
 			"Failed to initialize input device: %d\n", error);
 		return error;
+	}
+
+	if (bt541->extcon) {
+		error = devm_work_autocancel(&client->dev, &bt541->extcon_work,
+					     zinitix_extcon_work);
+		if (error)
+			return error;
+
+		bt541->extcon_nb.notifier_call = zinitix_extcon_notifier;
+		error = devm_extcon_register_notifier_all(&client->dev,
+							  bt541->extcon,
+							  &bt541->extcon_nb);
+		if (error)
+			return dev_err_probe(&client->dev, error,
+					     "Failed to register USB extcon notifier\n");
 	}
 
 	return 0;
@@ -820,6 +1040,13 @@ static DEFINE_SIMPLE_DEV_PM_OPS(zinitix_pm_ops, zinitix_suspend, zinitix_resume)
 #ifdef CONFIG_OF
 static const struct zinitix_chip_info zinitix_zt7554_chip_info = {
 	.default_touch_mode = 1,
+	.power_on_delay_ms = 400,
+	.firmware_on_delay_ms = 150,
+	.read_delay_us = 50,
+	.post_transaction_delay_us = 10,
+	.firmware_checksum = 0x55aa,
+	.has_usb_detect = true,
+	.needs_second_reset = true,
 };
 
 static const struct of_device_id zinitix_of_match[] = {
