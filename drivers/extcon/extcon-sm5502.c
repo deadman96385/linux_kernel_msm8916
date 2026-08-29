@@ -53,10 +53,9 @@ struct sm5502_muic_info {
 	struct regmap_irq_chip_data *irq_data;
 	struct sm5502_muic_irq_context *irq_contexts;
 	int irq;
-	bool irq_attach;
-	bool irq_detach;
+	bool irq_pending;
 	bool irq_work_scheduled;
-	/* Protects IRQ event flags and work scheduling state. */
+	/* Protects IRQ rescan and work scheduling state. */
 	spinlock_t irq_lock;
 	struct work_struct irq_work;
 	unsigned int prev_cable_type;
@@ -82,6 +81,10 @@ struct sm5502_type {
 	unsigned int num_reg_data;
 
 	unsigned int otg_dev_type1;
+	unsigned int usb_dev_type3;
+	unsigned int dcp_dev_type3;
+	unsigned int vbus_valid_reg;
+	unsigned int vbus_valid_mask;
 	unsigned int detect_delay_ms;
 	int (*parse_irq)(struct sm5502_muic_info *info, int irq_type);
 };
@@ -137,6 +140,26 @@ static struct reg_data sm5504_reg_data[] = {
 			| SM5504_REG_CONTROL_CHGTYP_MASK
 			| SM5504_REG_CONTROL_USBCHDEN_MASK
 			| SM5504_REG_CONTROL_ADC_EN_MASK,
+		.invert = true,
+	},
+};
+
+/* Register setup used by Samsung's downstream SM5703 MUIC driver. */
+static struct reg_data sm5703_reg_data[] = {
+	{
+		.reg = SM5502_REG_CONTROL,
+		.val = SM5502_REG_CONTROL_SW_OPEN_MASK
+			| SM5502_REG_CONTROL_RAW_DATA_MASK
+			| SM5502_REG_CONTROL_MANUAL_SW_MASK
+			| SM5502_REG_CONTROL_WAIT_MASK,
+		.invert = true,
+	}, {
+		.reg = SM5502_REG_TIMING_SET1,
+		.val = TIMING_ADC_DET_300MS,
+		.invert = true,
+	}, {
+		.reg = SM5703_REG_CHGPUMP_SET,
+		.val = 0,
 		.invert = true,
 	},
 };
@@ -248,6 +271,57 @@ static const struct regmap_irq_chip sm5502_muic_irq_chip = {
 	.num_regs		= 2,
 	.irqs			= sm5502_irqs,
 	.num_irqs		= ARRAY_SIZE(sm5502_irqs),
+};
+
+/*
+ * SM5703 shares the register layout, but not the meaning of INT2.  Request
+ * every interrupt that Samsung's downstream driver leaves unmasked.  The
+ * remaining INT1 bits stay masked by regmap-irq.
+ */
+static const struct muic_irq sm5703_muic_irqs[] = {
+	{ SM5703_IRQ_INT1_ATTACH,		"muic-attach" },
+	{ SM5703_IRQ_INT1_DETACH,		"muic-detach" },
+	{ SM5703_IRQ_INT1_OVP_ENABLE,		"muic-ovp-enable" },
+	{ SM5703_IRQ_INT1_OVP_DISABLE,		"muic-ovp-disable" },
+	{ SM5703_IRQ_INT2_VBUS_OFF,		"muic-vbus-off" },
+	{ SM5703_IRQ_INT2_RESERVED_ATTACH,	"muic-reserved-attach" },
+	{ SM5703_IRQ_INT2_ADC_CHANGE,		"muic-adc-change" },
+	{ SM5703_IRQ_INT2_STUCK_KEY,		"muic-stuck-key" },
+	{ SM5703_IRQ_INT2_STUCK_KEY_RCV,	"muic-stuck-key-rcv" },
+	{ SM5703_IRQ_INT2_MHL,			"muic-mhl" },
+	{ SM5703_IRQ_INT2_RID_CHARGER,		"muic-rid-charger" },
+	{ SM5703_IRQ_INT2_VBUSDET_ON,		"muic-vbus-on" },
+};
+
+static const struct regmap_irq sm5703_irqs[] = {
+	/* INT1 interrupts */
+	{ .reg_offset = 0, .mask = SM5703_IRQ_INT1_ATTACH_MASK, },
+	{ .reg_offset = 0, .mask = SM5703_IRQ_INT1_DETACH_MASK, },
+	{ .reg_offset = 0, .mask = SM5703_IRQ_INT1_KP_MASK, },
+	{ .reg_offset = 0, .mask = SM5703_IRQ_INT1_LKP_MASK, },
+	{ .reg_offset = 0, .mask = SM5703_IRQ_INT1_LKR_MASK, },
+	{ .reg_offset = 0, .mask = SM5703_IRQ_INT1_OVP_ENABLE_MASK, },
+	{ .reg_offset = 0, .mask = SM5703_IRQ_INT1_RESERVED_MASK, },
+	{ .reg_offset = 0, .mask = SM5703_IRQ_INT1_OVP_DISABLE_MASK, },
+
+	/* INT2 interrupts */
+	{ .reg_offset = 1, .mask = SM5703_IRQ_INT2_VBUS_OFF_MASK, },
+	{ .reg_offset = 1, .mask = SM5703_IRQ_INT2_RESERVED_ATTACH_MASK, },
+	{ .reg_offset = 1, .mask = SM5703_IRQ_INT2_ADC_CHANGE_MASK, },
+	{ .reg_offset = 1, .mask = SM5703_IRQ_INT2_STUCK_KEY_MASK, },
+	{ .reg_offset = 1, .mask = SM5703_IRQ_INT2_STUCK_KEY_RCV_MASK, },
+	{ .reg_offset = 1, .mask = SM5703_IRQ_INT2_MHL_MASK, },
+	{ .reg_offset = 1, .mask = SM5703_IRQ_INT2_RID_CHARGER_MASK, },
+	{ .reg_offset = 1, .mask = SM5703_IRQ_INT2_VBUSDET_ON_MASK, },
+};
+
+static const struct regmap_irq_chip sm5703_muic_irq_chip = {
+	.name			= "sm5703-muic",
+	.status_base		= SM5502_REG_INT1,
+	.mask_base		= SM5502_REG_INTMASK1,
+	.num_regs		= 2,
+	.irqs			= sm5703_irqs,
+	.num_irqs		= ARRAY_SIZE(sm5703_irqs),
 };
 
 /* List of supported interrupt for SM5504 */
@@ -376,7 +450,7 @@ static int sm5502_muic_set_path(struct sm5502_muic_info *info,
 /* Return cable type of attached or detached accessories */
 static int sm5502_muic_get_cable_type(struct sm5502_muic_info *info)
 {
-	unsigned int cable_type, adc, dev_type1;
+	unsigned int cable_type, adc, dev_type1, dev_type3 = 0, vbus;
 	int ret;
 
 	/* Read ADC value according to external cable or button */
@@ -456,16 +530,29 @@ static int sm5502_muic_get_cable_type(struct sm5502_muic_info *info)
 			return ret;
 		}
 
+		if (info->type->usb_dev_type3 || info->type->dcp_dev_type3) {
+			ret = regmap_read(info->regmap, SM5502_REG_DEV_TYPE3,
+					  &dev_type3);
+			if (ret) {
+				dev_err(info->dev, "failed to read DEV_TYPE3 reg\n");
+				return ret;
+			}
+		}
+
 		if (dev_type1 & info->type->otg_dev_type1) {
 			cable_type = SM5502_MUIC_ADC_OPEN_USB_OTG;
 			break;
 		}
 
-		if (dev_type1 & SM5502_REG_DEV_TYPE1_USB_SDP_MASK) {
+		if ((dev_type1 & SM5502_REG_DEV_TYPE1_USB_SDP_MASK) ||
+		    (dev_type3 & info->type->usb_dev_type3)) {
 			cable_type = SM5502_MUIC_ADC_OPEN_USB;
 		} else if (dev_type1 & SM5502_REG_DEV_TYPE1_USB_CHG_MASK) {
 			cable_type = SM5502_MUIC_ADC_OPEN_USB_CDP;
-		} else if (dev_type1 & SM5502_REG_DEV_TYPE1_DEDICATED_CHG_MASK) {
+		} else if ((dev_type1 &
+			    (SM5502_REG_DEV_TYPE1_DEDICATED_CHG_MASK |
+			     SM5502_REG_DEV_TYPE1_CAR_KIT_CHARGER_MASK)) ||
+			   (dev_type3 & info->type->dcp_dev_type3)) {
 			cable_type = SM5502_MUIC_ADC_OPEN_TA;
 		} else {
 			dev_dbg(info->dev,
@@ -480,26 +567,43 @@ static int sm5502_muic_get_cable_type(struct sm5502_muic_info *info)
 		return -EINVAL;
 	}
 
+	if (info->type->vbus_valid_mask &&
+	    cable_type != SM5502_MUIC_ADC_GROUND_USB_OTG &&
+	    cable_type != SM5502_MUIC_ADC_OPEN_USB_OTG) {
+		ret = regmap_read(info->regmap, info->type->vbus_valid_reg,
+				  &vbus);
+		if (ret) {
+			dev_err(info->dev, "failed to read VBUS status reg\n");
+			return ret;
+		}
+		if (!(vbus & info->type->vbus_valid_mask))
+			return -ENODEV;
+	}
+
 	return cable_type;
 }
 
-static int sm5502_muic_cable_handler(struct sm5502_muic_info *info,
-				     bool attached)
+static bool sm5502_muic_cable_supported(int cable_type)
 {
-	int cable_type = SM5502_MUIC_ADC_GROUND;
+	switch (cable_type) {
+	case SM5502_MUIC_ADC_OPEN_USB:
+	case SM5502_MUIC_ADC_OPEN_USB_CDP:
+	case SM5502_MUIC_ADC_OPEN_TA:
+	case SM5502_MUIC_ADC_GROUND_USB_OTG:
+	case SM5502_MUIC_ADC_OPEN_USB_OTG:
+		return true;
+	default:
+		return false;
+	}
+}
+
+static int sm5502_muic_cable_handler(struct sm5502_muic_info *info,
+				     int cable_type, bool attached)
+{
 	unsigned int con_sw = DM_DP_SWITCH_OPEN;
 	unsigned int vbus_sw = VBUSIN_SWITCH_OPEN;
 	unsigned int id;
 	int ret, charger_id = EXTCON_NONE;
-
-	/* Get the type of attached or detached cable */
-	if (attached)
-		cable_type = sm5502_muic_get_cable_type(info);
-	else
-		cable_type = info->prev_cable_type;
-	if (cable_type < 0)
-		return cable_type;
-	info->prev_cable_type = cable_type;
 
 	switch (cable_type) {
 	case SM5502_MUIC_ADC_OPEN_USB:
@@ -547,10 +651,41 @@ static int sm5502_muic_cable_handler(struct sm5502_muic_info *info,
 			return ret;
 	}
 
-	if (!attached)
-		info->prev_cable_type = SM5502_MUIC_ADC_GROUND;
-
 	return 0;
+}
+
+/* Reconcile extcon state with the final state reported by the MUIC. */
+static int sm5502_muic_update_cable(struct sm5502_muic_info *info)
+{
+	int cable_type, ret;
+
+	cable_type = sm5502_muic_get_cable_type(info);
+	if (cable_type == -EINVAL || cable_type == -ENODEV)
+		cable_type = SM5502_MUIC_ADC_GROUND;
+	else if (cable_type < 0)
+		return cable_type;
+
+	if (!sm5502_muic_cable_supported(cable_type))
+		cable_type = SM5502_MUIC_ADC_GROUND;
+
+	if (cable_type == info->prev_cable_type)
+		return 0;
+
+	if (sm5502_muic_cable_supported(info->prev_cable_type)) {
+		ret = sm5502_muic_cable_handler(info, info->prev_cable_type, false);
+		if (ret)
+			return ret;
+		info->prev_cable_type = SM5502_MUIC_ADC_GROUND;
+	}
+
+	if (!sm5502_muic_cable_supported(cable_type))
+		return 0;
+
+	ret = sm5502_muic_cable_handler(info, cable_type, true);
+	if (!ret)
+		info->prev_cable_type = cable_type;
+
+	return ret;
 }
 
 static void sm5502_muic_irq_work(struct work_struct *work)
@@ -558,13 +693,12 @@ static void sm5502_muic_irq_work(struct work_struct *work)
 	struct sm5502_muic_info *info = container_of(work,
 			struct sm5502_muic_info, irq_work);
 	unsigned long flags;
-	bool attach, detach;
+	bool pending;
 	int ret;
 
 	if (IS_ERR_OR_NULL(info->edev)) {
 		spin_lock_irqsave(&info->irq_lock, flags);
-		info->irq_attach = false;
-		info->irq_detach = false;
+		info->irq_pending = false;
 		info->irq_work_scheduled = false;
 		spin_unlock_irqrestore(&info->irq_lock, flags);
 		return;
@@ -572,46 +706,31 @@ static void sm5502_muic_irq_work(struct work_struct *work)
 
 	for (;;) {
 		spin_lock_irqsave(&info->irq_lock, flags);
-		attach = info->irq_attach;
-		detach = info->irq_detach;
-		info->irq_attach = false;
-		info->irq_detach = false;
-		if (!attach && !detach)
+		pending = info->irq_pending;
+		info->irq_pending = false;
+		if (!pending)
 			info->irq_work_scheduled = false;
 		spin_unlock_irqrestore(&info->irq_lock, flags);
 
-		if (!attach && !detach)
+		if (!pending)
 			break;
 
 		mutex_lock(&info->mutex);
-		if (attach) {
-			ret = sm5502_muic_cable_handler(info, true);
-			if (ret)
-				dev_err(info->dev,
-					"failed to handle MUIC attach: %d\n", ret);
-		}
-		if (detach) {
-			ret = sm5502_muic_cable_handler(info, false);
-			if (ret)
-				dev_err(info->dev,
-					"failed to handle MUIC detach: %d\n", ret);
-		}
+		ret = sm5502_muic_update_cable(info);
 		mutex_unlock(&info->mutex);
+		if (ret)
+			dev_err(info->dev,
+				"failed to rescan MUIC cable state: %d\n", ret);
 	}
 }
 
-/*
- * Sets irq_attach or irq_detach in sm5502_muic_info and returns 0.
- * Returns -ESRCH if irq_type does not match registered IRQ for this dev type.
- */
+/* Mark cable-state interrupts for a hardware rescan. */
 static int sm5502_parse_irq(struct sm5502_muic_info *info, int irq_type)
 {
 	switch (irq_type) {
 	case SM5502_IRQ_INT1_ATTACH:
-		info->irq_attach = true;
-		break;
 	case SM5502_IRQ_INT1_DETACH:
-		info->irq_detach = true;
+		info->irq_pending = true;
 		break;
 	case SM5502_IRQ_INT1_KP:
 	case SM5502_IRQ_INT1_LKP:
@@ -636,10 +755,8 @@ static int sm5504_parse_irq(struct sm5502_muic_info *info, int irq_type)
 {
 	switch (irq_type) {
 	case SM5504_IRQ_INT1_ATTACH:
-		info->irq_attach = true;
-		break;
 	case SM5504_IRQ_INT1_DETACH:
-		info->irq_detach = true;
+		info->irq_pending = true;
 		break;
 	case SM5504_IRQ_INT1_CHG_DET:
 	case SM5504_IRQ_INT1_DCD_OUT:
@@ -660,6 +777,30 @@ static int sm5504_parse_irq(struct sm5502_muic_info *info, int irq_type)
 	return 0;
 }
 
+static int sm5703_parse_irq(struct sm5502_muic_info *info, int irq_type)
+{
+	switch (irq_type) {
+	case SM5703_IRQ_INT1_ATTACH:
+	case SM5703_IRQ_INT1_DETACH:
+	case SM5703_IRQ_INT2_VBUS_OFF:
+	case SM5703_IRQ_INT2_RESERVED_ATTACH:
+	case SM5703_IRQ_INT2_ADC_CHANGE:
+	case SM5703_IRQ_INT2_MHL:
+	case SM5703_IRQ_INT2_RID_CHARGER:
+	case SM5703_IRQ_INT2_VBUSDET_ON:
+		info->irq_pending = true;
+		break;
+	case SM5703_IRQ_INT1_OVP_ENABLE:
+	case SM5703_IRQ_INT1_OVP_DISABLE:
+	case SM5703_IRQ_INT2_STUCK_KEY:
+	case SM5703_IRQ_INT2_STUCK_KEY_RCV:
+	default:
+		break;
+	}
+
+	return 0;
+}
+
 static irqreturn_t sm5502_muic_irq_handler(int irq, void *data)
 {
 	struct sm5502_muic_irq_context *context = data;
@@ -670,7 +811,7 @@ static irqreturn_t sm5502_muic_irq_handler(int irq, void *data)
 
 	spin_lock_irqsave(&info->irq_lock, flags);
 	ret = info->type->parse_irq(info, context->type);
-	if (!ret && (info->irq_attach || info->irq_detach) &&
+	if (!ret && info->irq_pending &&
 	    !info->irq_work_scheduled) {
 		info->irq_work_scheduled = true;
 		schedule = true;
@@ -696,7 +837,7 @@ static void sm5502_muic_detect_cable_wq(struct work_struct *work)
 	mutex_lock(&info->mutex);
 
 	/* Notify the state of connector cable or not  */
-	ret = sm5502_muic_cable_handler(info, true);
+	ret = sm5502_muic_update_cable(info);
 	if (ret < 0)
 		dev_warn(info->dev, "failed to detect cable state\n");
 
@@ -885,14 +1026,18 @@ static const struct sm5502_type sm5504_data = {
 };
 
 static const struct sm5502_type sm5703_data = {
-	.muic_irqs = sm5502_muic_irqs,
-	.num_muic_irqs = ARRAY_SIZE(sm5502_muic_irqs),
-	.irq_chip = &sm5502_muic_irq_chip,
-	.reg_data = sm5502_reg_data,
-	.num_reg_data = ARRAY_SIZE(sm5502_reg_data),
+	.muic_irqs = sm5703_muic_irqs,
+	.num_muic_irqs = ARRAY_SIZE(sm5703_muic_irqs),
+	.irq_chip = &sm5703_muic_irq_chip,
+	.reg_data = sm5703_reg_data,
+	.num_reg_data = ARRAY_SIZE(sm5703_reg_data),
 	.otg_dev_type1 = SM5502_REG_DEV_TYPE1_USB_OTG_MASK,
+	.usb_dev_type3 = SM5703_REG_DEV_TYPE3_NON_STANDARD_MASK,
+	.dcp_dev_type3 = SM5703_REG_DEV_TYPE3_U200_CHG_MASK,
+	.vbus_valid_reg = SM5703_REG_VBUSINVALID,
+	.vbus_valid_mask = SM5703_REG_VBUSIN_VALID_MASK,
 	.detect_delay_ms = DELAY_MS_SM5703,
-	.parse_irq = sm5502_parse_irq,
+	.parse_irq = sm5703_parse_irq,
 };
 
 static const struct of_device_id sm5502_dt_match[] = {
