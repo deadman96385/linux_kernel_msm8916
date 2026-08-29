@@ -1171,24 +1171,12 @@ static const struct of_device_id sm5502_dt_match[] = {
 MODULE_DEVICE_TABLE(of, sm5502_dt_match);
 
 #ifdef CONFIG_PM_SLEEP
-static int sm5502_muic_suspend(struct device *dev)
-{
-	struct i2c_client *i2c = to_i2c_client(dev);
-	struct sm5502_muic_info *info = i2c_get_clientdata(i2c);
-
-	enable_irq_wake(info->irq);
-
-	return 0;
-}
-
 static int sm5502_muic_resume(struct device *dev)
 {
 	struct i2c_client *i2c = to_i2c_client(dev);
 	struct sm5502_muic_info *info = i2c_get_clientdata(i2c);
 	unsigned int control;
 	int ret;
-
-	disable_irq_wake(info->irq);
 
 	mutex_lock(&info->mutex);
 	if (info->type->force_manual_path) {
@@ -1216,7 +1204,7 @@ static int sm5502_muic_resume(struct device *dev)
 #endif
 
 static SIMPLE_DEV_PM_OPS(sm5502_muic_pm_ops,
-			 sm5502_muic_suspend, sm5502_muic_resume);
+			 NULL, sm5502_muic_resume);
 
 static const struct i2c_device_id sm5502_i2c_id[] = {
 	{ "sm5502", (kernel_ulong_t)&sm5502_data },
