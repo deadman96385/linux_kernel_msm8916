@@ -334,10 +334,14 @@ enum mipi_dsi_dcs_tear_mode {
 
 ssize_t mipi_dsi_dcs_write_buffer(struct mipi_dsi_device *dsi,
 				  const void *data, size_t len);
+ssize_t mipi_dsi_dcs_write_buffer_long(struct mipi_dsi_device *dsi,
+				       const void *data, size_t len);
 int mipi_dsi_dcs_write_buffer_chatty(struct mipi_dsi_device *dsi,
 				     const void *data, size_t len);
 void mipi_dsi_dcs_write_buffer_multi(struct mipi_dsi_multi_context *ctx,
 				     const void *data, size_t len);
+void mipi_dsi_dcs_write_buffer_long_multi(struct mipi_dsi_multi_context *ctx,
+					  const void *data, size_t len);
 void mipi_dsi_dual_dcs_write_buffer_multi(struct mipi_dsi_multi_context *ctx,
 					  struct mipi_dsi_device *dsi1,
 					  struct mipi_dsi_device *dsi2,
@@ -440,6 +444,22 @@ void mipi_dsi_shutdown_peripheral_multi(struct mipi_dsi_multi_context *ctx);
 	do {                                                            \
 		static const u8 d[] = { cmd, seq };                     \
 		mipi_dsi_dcs_write_buffer_multi(ctx, d, ARRAY_SIZE(d)); \
+	} while (0)
+
+/**
+ * mipi_dsi_dcs_write_long_seq_multi - transmit a DCS long write packet
+ *
+ * This macro is intended for devices which require the long packet format
+ * even when the command and payload would fit in a short packet.
+ *
+ * @ctx: Context for multiple DSI transactions
+ * @cmd: Command
+ * @seq: buffer containing data to be transmitted
+ */
+#define mipi_dsi_dcs_write_long_seq_multi(ctx, cmd, seq...)                  \
+	do {                                                                  \
+		static const u8 d[] = { cmd, seq };                           \
+		mipi_dsi_dcs_write_buffer_long_multi(ctx, d, ARRAY_SIZE(d));  \
 	} while (0)
 
 /**
