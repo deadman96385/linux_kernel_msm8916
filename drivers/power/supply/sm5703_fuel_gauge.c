@@ -65,6 +65,9 @@
 #define SM5703_FG_VALUE_MASK		GENMASK(10, 0)
 #define SM5703_FG_SIGN_BIT		BIT(15)
 
+#define SM5703_FG_IOCV_AVG_DIFF_MIN	0x29
+#define SM5703_FG_IOCV_L_SPREAD_MAX	0x200
+
 struct sm5703_fg_model {
 	u16 table[3][SM5703_FG_TABLE_LENGTH];
 	u16 rce[3];
@@ -231,7 +234,9 @@ static int sm5703_fg_calculate_iocv(struct sm5703_fg *fg, u16 *iocv)
 			return ret;
 	}
 
-	if (!small || (abs(large - small) > 0x29 && large_spread < 0xcc))
+	if (!small ||
+	    (abs(large - small) > SM5703_FG_IOCV_AVG_DIFF_MIN &&
+	     large_spread < SM5703_FG_IOCV_L_SPREAD_MAX))
 		*iocv = large;
 	else
 		*iocv = small;
@@ -239,14 +244,14 @@ static int sm5703_fg_calculate_iocv(struct sm5703_fg *fg, u16 *iocv)
 	return 0;
 }
 
-static int sm5703_fg_write_model(struct sm5703_fg *fg, bool manual_ocv)
+static int sm5703_fg_write_model(struct sm5703_fg *fg, bool use_current_ocv)
 {
 	struct sm5703_fg_model *model = &fg->model;
 	unsigned int control;
 	u16 iocv;
 	int ret, i, j;
 
-	if (manual_ocv) {
+	if (use_current_ocv) {
 		int ocv_uv;
 
 		ret = sm5703_fg_read_voltage(fg, SM5703_FG_REG_OCV,
@@ -329,13 +334,12 @@ static int sm5703_fg_write_model(struct sm5703_fg *fg, bool manual_ocv)
 	ret = sm5703_fg_read(fg, SM5703_FG_REG_CNTL, &control);
 	if (ret)
 		goto out_lock;
-	control &= ~(SM5703_FG_CNTL_TOPOFF_SOC |
-		     SM5703_FG_CNTL_MANUAL_OCV);
-	control |= SM5703_FG_CNTL_MIX_MODE | SM5703_FG_CNTL_TEMP_MEASURE;
+	control &= ~SM5703_FG_CNTL_TOPOFF_SOC;
+	control |= SM5703_FG_CNTL_MIX_MODE |
+		   SM5703_FG_CNTL_TEMP_MEASURE |
+		   SM5703_FG_CNTL_MANUAL_OCV;
 	if (model->topoff_soc[0])
 		control |= SM5703_FG_CNTL_TOPOFF_SOC;
-	if (manual_ocv)
-		control |= SM5703_FG_CNTL_MANUAL_OCV;
 
 	ret = sm5703_fg_write(fg, SM5703_FG_REG_CNTL, control);
 	if (ret)
@@ -347,7 +351,7 @@ static int sm5703_fg_write_model(struct sm5703_fg *fg, bool manual_ocv)
 	if (ret)
 		return ret;
 
-	if (!manual_ocv) {
+	if (!use_current_ocv) {
 		ret = sm5703_fg_calculate_iocv(fg, &iocv);
 		if (ret)
 			return ret;
@@ -418,6 +422,7 @@ static int sm5703_fg_model_matches(struct sm5703_fg *fg, bool *matches)
 		return ret;
 	if (!(value & SM5703_FG_CNTL_MIX_MODE) ||
 	    !(value & SM5703_FG_CNTL_TEMP_MEASURE) ||
+	    !(value & SM5703_FG_CNTL_MANUAL_OCV) ||
 	    (!!(value & SM5703_FG_CNTL_TOPOFF_SOC) !=
 	     !!model->topoff_soc[0]))
 		return 0;
