@@ -61,6 +61,7 @@ struct sm5703_charger {
 	bool source_online;
 	bool user_enabled;
 	bool hw_charge_enabled;
+	bool automatic_charge_stop;
 	enum power_supply_usb_type usb_type;
 	enum sm5703_thermal_state thermal_state;
 	int input_current_ua;
@@ -767,7 +768,9 @@ static int sm5703_hw_init(struct sm5703_charger *charger)
 		return ret;
 
 	ret = regmap_update_bits(charger->regmap, SM5703_REG_CHGCNTL4,
-				 SM5703_CHGCNTL4_AUTOSTOP, 0);
+				 SM5703_CHGCNTL4_AUTOSTOP,
+				 charger->automatic_charge_stop ?
+				 SM5703_CHGCNTL4_AUTOSTOP : 0);
 	if (ret)
 		return ret;
 
@@ -927,6 +930,9 @@ static int sm5703_charger_probe(struct platform_device *pdev)
 	charger->user_enabled = true;
 	charger->usb_type = POWER_SUPPLY_USB_TYPE_UNKNOWN;
 	charger->thermal_state = SM5703_THERMAL_UNKNOWN;
+	charger->automatic_charge_stop =
+		device_property_read_bool(charger->dev,
+					  "siliconmitus,automatic-charge-stop");
 	charger->dcp_input_current_ua = 1000000;
 	charger->aicl_voltage_uv = SM5703_AICL_VOLTAGE_MIN_UV;
 	charger->monitor_interval_ms = SM5703_MONITOR_INTERVAL_MS;
