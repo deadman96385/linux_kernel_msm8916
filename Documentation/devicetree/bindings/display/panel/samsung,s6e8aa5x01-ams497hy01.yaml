@@ -1,0 +1,72 @@
+# SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
+%YAML 1.2
+---
+$id: http://devicetree.org/schemas/display/panel/samsung,s6e8aa5x01-ams497hy01.yaml#
+$schema: http://devicetree.org/meta-schemas/core.yaml#
+
+title: Samsung AMS497HY01 and AMS520KT01 AMOLED panels
+
+maintainers:
+  - Sean Hoyt <seanhoyt963@gmail.com>
+
+description: |
+  The Samsung AMS497HY01 and AMS520KT01 are 720x1280 AMOLED panels with an
+  S6E8AA5X01 display controller. They use a four-lane MIPI-DSI video link and
+  require separate core and analog supplies.
+
+allOf:
+  - $ref: panel-common.yaml#
+
+properties:
+  compatible:
+    enum:
+      - samsung,s6e8aa5x01-ams497hy01
+      - samsung,s6e8aa5x01-ams520kt01
+
+  reg:
+    maxItems: 1
+
+  vdd3-supply:
+    description: Core voltage supply
+
+  vci-supply:
+    description: Analog circuit voltage supply
+
+  reset-gpios: true
+
+  port: true
+
+required:
+  - compatible
+  - reg
+  - vdd3-supply
+  - vci-supply
+  - reset-gpios
+
+additionalProperties: false
+
+examples:
+  - |
+    #include <dt-bindings/gpio/gpio.h>
+
+    dsi {
+        #address-cells = <1>;
+        #size-cells = <0>;
+
+        panel@0 {
+            compatible = "samsung,s6e8aa5x01-ams497hy01";
+            reg = <0>;
+
+            vdd3-supply = <&panel_vdd3>;
+            vci-supply = <&panel_vci>;
+            reset-gpios = <&tlmm 25 GPIO_ACTIVE_LOW>;
+
+            port {
+                panel_in: endpoint {
+                    remote-endpoint = <&dsi0_out>;
+                };
+            };
+        };
+    };
+
+...
