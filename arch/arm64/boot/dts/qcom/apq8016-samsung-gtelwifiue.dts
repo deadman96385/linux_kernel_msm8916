@@ -31,6 +31,8 @@
 		constant-charge-current-max-microamp = <1500000>;
 		constant-charge-voltage-max-microvolt = <4350000>;
 		charge-term-current-microamp = <275000>;
+		operating-range-celsius = <(-5) 60>;
+		alert-celsius = <0 45>;
 	};
 
 	reserved-memory {
@@ -249,6 +251,7 @@
 		charger: charger {
 			compatible = "siliconmitus,sm5703-charger";
 			monitored-battery = <&battery>;
+			siliconmitus,monitored-fuel-gauge = <&fuel_gauge>;
 			siliconmitus,usb-connector = <&usb_con>;
 			enable-gpios = <&tlmm 119 GPIO_ACTIVE_LOW>;
 			input-current-limit-microamp = <1000000>;

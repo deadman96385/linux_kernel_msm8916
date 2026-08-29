@@ -5,6 +5,7 @@
 #include <linux/extcon.h>
 #include <linux/gpio/consumer.h>
 #include <linux/interrupt.h>
+#include <linux/limits.h>
 #include <linux/mfd/sm5703.h>
 #include <linux/module.h>
 #include <linux/mutex.h>
@@ -34,6 +35,14 @@
 #define SM5703_AICL_CURRENT_STEP_UA	50000
 #define SM5703_AICL_START_DELAY_MS	1200
 #define SM5703_AICL_STEP_DELAY_MS	200
+#define SM5703_MONITOR_INTERVAL_MS	10000
+
+enum sm5703_thermal_state {
+	SM5703_THERMAL_UNKNOWN,
+	SM5703_THERMAL_NORMAL,
+	SM5703_THERMAL_COLD,
+	SM5703_THERMAL_HOT,
+};
 
 struct sm5703_charger {
 	struct device *dev;
@@ -45,12 +54,15 @@ struct sm5703_charger {
 	struct notifier_block extcon_nb;
 	struct work_struct extcon_work;
 	struct delayed_work aicl_work;
+	struct delayed_work monitor_work;
 	/* Serializes source policy and charger register programming. */
 	struct mutex lock;
 
 	bool source_online;
 	bool user_enabled;
+	bool hw_charge_enabled;
 	enum power_supply_usb_type usb_type;
+	enum sm5703_thermal_state thermal_state;
 	int input_current_ua;
 	int fast_current_ua;
 	int fast_current_max_ua;
@@ -58,6 +70,11 @@ struct sm5703_charger {
 	int term_current_ua;
 	int dcp_input_current_ua;
 	int aicl_voltage_uv;
+	int temp_stop_min_decic;
+	int temp_resume_min_decic;
+	int temp_resume_max_decic;
+	int temp_stop_max_decic;
+	int monitor_interval_ms;
 	int aicl_irq;
 	bool aicl_irq_disabled;
 };
@@ -161,8 +178,10 @@ static int sm5703_set_charging_locked(struct sm5703_charger *charger,
 
 	if (!enable) {
 		ret = sm5703_set_charging(charger->sm5703, false);
-		if (!ret)
+		if (!ret) {
 			gpiod_set_value_cansleep(charger->enable_gpio, 0);
+			charger->hw_charge_enabled = false;
+		}
 		return ret;
 	}
 
@@ -171,8 +190,18 @@ static int sm5703_set_charging_locked(struct sm5703_charger *charger,
 		return ret;
 
 	gpiod_set_value_cansleep(charger->enable_gpio, 1);
+	charger->hw_charge_enabled =
+		sm5703_charging_active(charger->sm5703);
 
 	return 0;
+}
+
+static int sm5703_apply_charge_enable_locked(struct sm5703_charger *charger)
+{
+	bool enable = charger->source_online && charger->user_enabled &&
+		charger->thermal_state == SM5703_THERMAL_NORMAL;
+
+	return sm5703_set_charging_locked(charger, enable);
 }
 
 static int sm5703_get_status(struct sm5703_charger *charger, int *status)
@@ -182,6 +211,12 @@ static int sm5703_get_status(struct sm5703_charger *charger, int *status)
 
 	if (!READ_ONCE(charger->source_online)) {
 		*status = POWER_SUPPLY_STATUS_DISCHARGING;
+		return 0;
+	}
+	if (!READ_ONCE(charger->user_enabled) ||
+	    READ_ONCE(charger->thermal_state) != SM5703_THERMAL_NORMAL ||
+	    !sm5703_charging_active(charger->sm5703)) {
+		*status = POWER_SUPPLY_STATUS_NOT_CHARGING;
 		return 0;
 	}
 
@@ -201,6 +236,7 @@ static int sm5703_get_status(struct sm5703_charger *charger, int *status)
 
 static int sm5703_get_health(struct sm5703_charger *charger, int *health)
 {
+	enum sm5703_thermal_state thermal_state;
 	unsigned int status2, status5;
 	int ret;
 
@@ -211,6 +247,7 @@ static int sm5703_get_health(struct sm5703_charger *charger, int *health)
 	ret = regmap_read(charger->regmap, SM5703_REG_STATUS5, &status5);
 	if (ret)
 		return ret;
+	thermal_state = READ_ONCE(charger->thermal_state);
 
 	if (status2 & SM5703_STATUS2_NOBAT)
 		*health = POWER_SUPPLY_HEALTH_NO_BATTERY;
@@ -219,6 +256,12 @@ static int sm5703_get_health(struct sm5703_charger *charger, int *health)
 	else if (READ_ONCE(charger->source_online) &&
 		 status5 & SM5703_STATUS5_VBUSUVLO)
 		*health = POWER_SUPPLY_HEALTH_UNDERVOLTAGE;
+	else if (thermal_state == SM5703_THERMAL_COLD)
+		*health = POWER_SUPPLY_HEALTH_COLD;
+	else if (thermal_state == SM5703_THERMAL_HOT)
+		*health = POWER_SUPPLY_HEALTH_OVERHEAT;
+	else if (thermal_state == SM5703_THERMAL_UNKNOWN)
+		*health = POWER_SUPPLY_HEALTH_UNKNOWN;
 	else
 		*health = POWER_SUPPLY_HEALTH_GOOD;
 
@@ -340,9 +383,7 @@ static int sm5703_charger_set_property(struct power_supply *psy,
 			break;
 		}
 
-		ret = sm5703_set_charging_locked(charger,
-						 charger->source_online &&
-						 charger->user_enabled);
+		ret = sm5703_apply_charge_enable_locked(charger);
 		if (ret)
 			charger->user_enabled = old_enabled;
 		break;
@@ -437,7 +478,7 @@ static int sm5703_apply_source_locked(struct sm5703_charger *charger,
 
 	charger->source_online = true;
 	charger->usb_type = type;
-	ret = sm5703_set_charging_locked(charger, charger->user_enabled);
+	ret = sm5703_apply_charge_enable_locked(charger);
 	if (ret) {
 		charger->source_online = false;
 		charger->usb_type = POWER_SUPPLY_USB_TYPE_UNKNOWN;
@@ -502,6 +543,117 @@ out_warn:
 				 msecs_to_jiffies(SM5703_AICL_START_DELAY_MS));
 out_unlock:
 	mutex_unlock(&charger->lock);
+}
+
+static int sm5703_get_fuel_gauge_temp(struct sm5703_charger *charger,
+				      int *temp_decic)
+{
+	union power_supply_propval val;
+	struct power_supply *fuel_gauge;
+	int ret;
+
+	fuel_gauge = power_supply_get_by_reference(dev_fwnode(charger->dev),
+						   "siliconmitus,monitored-fuel-gauge");
+	if (IS_ERR(fuel_gauge))
+		return PTR_ERR(fuel_gauge);
+	if (!fuel_gauge)
+		return -EPROBE_DEFER;
+
+	ret = power_supply_get_property(fuel_gauge, POWER_SUPPLY_PROP_TEMP,
+					&val);
+	power_supply_put(fuel_gauge);
+	if (ret)
+		return ret;
+
+	*temp_decic = val.intval;
+	return 0;
+}
+
+static enum sm5703_thermal_state
+sm5703_update_thermal_state(struct sm5703_charger *charger, int temp_decic)
+{
+	switch (charger->thermal_state) {
+	case SM5703_THERMAL_COLD:
+		if (temp_decic < charger->temp_resume_min_decic)
+			return SM5703_THERMAL_COLD;
+		break;
+	case SM5703_THERMAL_HOT:
+		if (temp_decic > charger->temp_resume_max_decic)
+			return SM5703_THERMAL_HOT;
+		break;
+	default:
+		break;
+	}
+
+	if (temp_decic <= charger->temp_stop_min_decic)
+		return SM5703_THERMAL_COLD;
+	if (temp_decic >= charger->temp_stop_max_decic)
+		return SM5703_THERMAL_HOT;
+
+	return SM5703_THERMAL_NORMAL;
+}
+
+static void sm5703_monitor_work(struct work_struct *work)
+{
+	struct sm5703_charger *charger =
+		container_of(to_delayed_work(work), struct sm5703_charger,
+			     monitor_work);
+	enum sm5703_thermal_state old_thermal;
+	bool old_enabled;
+	bool changed = false;
+	int temp_decic;
+	int ret;
+
+	ret = sm5703_get_fuel_gauge_temp(charger, &temp_decic);
+
+	mutex_lock(&charger->lock);
+	old_thermal = charger->thermal_state;
+	old_enabled = charger->hw_charge_enabled;
+	if (ret) {
+		charger->thermal_state = SM5703_THERMAL_UNKNOWN;
+		if (old_thermal == SM5703_THERMAL_UNKNOWN)
+			dev_warn_ratelimited(charger->dev,
+					     "charging stopped: fuel-gauge temperature unavailable (%d)\n",
+					     ret);
+	} else {
+		charger->thermal_state =
+			sm5703_update_thermal_state(charger, temp_decic);
+	}
+
+	if (old_thermal != charger->thermal_state) {
+		changed = true;
+		if (charger->thermal_state == SM5703_THERMAL_NORMAL)
+			dev_info(charger->dev,
+				 "battery temperature safe at %d.%d C\n",
+				 temp_decic / 10, abs(temp_decic % 10));
+		else if (charger->thermal_state == SM5703_THERMAL_COLD)
+			dev_warn(charger->dev,
+				 "charging stopped: battery cold at %d.%d C\n",
+				 temp_decic / 10, abs(temp_decic % 10));
+		else if (charger->thermal_state == SM5703_THERMAL_HOT)
+			dev_warn(charger->dev,
+				 "charging stopped: battery hot at %d.%d C\n",
+				 temp_decic / 10, abs(temp_decic % 10));
+		else
+			dev_warn(charger->dev,
+				 "charging stopped: fuel-gauge temperature unavailable (%d)\n",
+				 ret);
+	}
+
+	ret = sm5703_apply_charge_enable_locked(charger);
+	if (ret)
+		dev_err_ratelimited(charger->dev,
+				    "failed to update charger enable: %d\n",
+				    ret);
+	if (old_enabled != charger->hw_charge_enabled)
+		changed = true;
+	mutex_unlock(&charger->lock);
+
+	if (changed)
+		power_supply_changed(charger->psy);
+
+	mod_delayed_work(system_wq, &charger->monitor_work,
+			 msecs_to_jiffies(charger->monitor_interval_ms));
 }
 
 static void sm5703_extcon_work(struct work_struct *work)
@@ -702,6 +854,16 @@ static int sm5703_get_battery_info(struct sm5703_charger *charger)
 	charger->fast_current_max_ua = info->constant_charge_current_max_ua;
 	charger->float_voltage_uv = info->constant_charge_voltage_max_uv;
 	charger->term_current_ua = info->charge_term_current_ua;
+	if (info->temp_min == INT_MIN || info->temp_alert_min == INT_MIN ||
+	    info->temp_alert_max == INT_MAX || info->temp_max == INT_MAX) {
+		power_supply_put_battery_info(charger->psy, info);
+		return dev_err_probe(charger->dev, -EINVAL,
+				     "battery temperature limits are required\n");
+	}
+	charger->temp_stop_min_decic = info->temp_min * 10;
+	charger->temp_resume_min_decic = info->temp_alert_min * 10;
+	charger->temp_resume_max_decic = info->temp_alert_max * 10;
+	charger->temp_stop_max_decic = info->temp_max * 10;
 	power_supply_put_battery_info(charger->psy, info);
 
 	if (charger->fast_current_max_ua < SM5703_FAST_CURRENT_MIN_UA ||
@@ -712,6 +874,14 @@ static int sm5703_get_battery_info(struct sm5703_charger *charger)
 	    charger->term_current_ua > SM5703_TERM_CURRENT_MAX_UA)
 		return dev_err_probe(charger->dev, -EINVAL,
 				     "battery charging parameters out of range\n");
+	if (charger->temp_stop_min_decic >=
+			charger->temp_resume_min_decic ||
+	    charger->temp_resume_min_decic >=
+			charger->temp_resume_max_decic ||
+	    charger->temp_resume_max_decic >=
+			charger->temp_stop_max_decic)
+		return dev_err_probe(charger->dev, -EINVAL,
+				     "battery temperature limits are invalid\n");
 
 	return 0;
 }
@@ -756,8 +926,10 @@ static int sm5703_charger_probe(struct platform_device *pdev)
 	charger->regmap = charger->sm5703->regmap;
 	charger->user_enabled = true;
 	charger->usb_type = POWER_SUPPLY_USB_TYPE_UNKNOWN;
+	charger->thermal_state = SM5703_THERMAL_UNKNOWN;
 	charger->dcp_input_current_ua = 1000000;
 	charger->aicl_voltage_uv = SM5703_AICL_VOLTAGE_MIN_UV;
+	charger->monitor_interval_ms = SM5703_MONITOR_INTERVAL_MS;
 	mutex_init(&charger->lock);
 	platform_set_drvdata(pdev, charger);
 
@@ -782,6 +954,17 @@ static int sm5703_charger_probe(struct platform_device *pdev)
 	    charger->aicl_voltage_uv > SM5703_AICL_VOLTAGE_MAX_UV)
 		return dev_err_probe(charger->dev, -EINVAL,
 				     "AICL voltage limit out of range\n");
+	if (!device_property_present(charger->dev,
+				     "siliconmitus,monitored-fuel-gauge"))
+		return dev_err_probe(charger->dev, -EINVAL,
+				     "missing monitored fuel gauge\n");
+	if (!device_property_read_u32(charger->dev,
+				      "siliconmitus,poll-interval-ms", &value))
+		charger->monitor_interval_ms = value;
+	if (charger->monitor_interval_ms < 1000 ||
+	    charger->monitor_interval_ms > 60000)
+		return dev_err_probe(charger->dev, -EINVAL,
+				     "temperature poll interval out of range\n");
 
 	psy_config.drv_data = charger;
 	psy_config.fwnode = dev_fwnode(charger->dev);
@@ -803,6 +986,11 @@ static int sm5703_charger_probe(struct platform_device *pdev)
 
 	ret = devm_delayed_work_autocancel(charger->dev, &charger->aicl_work,
 					   sm5703_aicl_work);
+	if (ret)
+		return ret;
+	ret = devm_delayed_work_autocancel(charger->dev,
+					   &charger->monitor_work,
+					   sm5703_monitor_work);
 	if (ret)
 		return ret;
 
@@ -828,6 +1016,7 @@ static int sm5703_charger_probe(struct platform_device *pdev)
 				     "failed to register extcon notifier\n");
 
 	/* Handle a cable that was already attached before this driver probed. */
+	mod_delayed_work(system_wq, &charger->monitor_work, 0);
 	schedule_work(&charger->extcon_work);
 
 	return 0;

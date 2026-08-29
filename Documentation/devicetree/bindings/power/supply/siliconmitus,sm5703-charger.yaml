@@ -19,6 +19,12 @@ properties:
 
   monitored-battery: true
 
+  siliconmitus,monitored-fuel-gauge:
+    $ref: /schemas/types.yaml#/definitions/phandle
+    description:
+      Fuel gauge supplying the live battery temperature used to inhibit
+      charging outside the monitored battery's temperature limits.
+
   siliconmitus,usb-connector:
     $ref: /schemas/types.yaml#/definitions/phandle
     description:
@@ -58,9 +64,17 @@ properties:
       Select the full boost-converter IQ3 current limit instead of 0.7 times
       the nominal limit.
 
+  siliconmitus,poll-interval-ms:
+    minimum: 1000
+    maximum: 60000
+    default: 10000
+    description:
+      Interval between battery-temperature safety checks.
+
 required:
   - compatible
   - monitored-battery
+  - siliconmitus,monitored-fuel-gauge
   - siliconmitus,usb-connector
 
 allOf:
@@ -75,6 +89,7 @@ examples:
     charger {
         compatible = "siliconmitus,sm5703-charger";
         monitored-battery = <&battery>;
+        siliconmitus,monitored-fuel-gauge = <&fuel_gauge>;
         siliconmitus,usb-connector = <&usb_con>;
         enable-gpios = <&tlmm 119 GPIO_ACTIVE_LOW>;
         input-current-limit-microamp = <1000000>;
