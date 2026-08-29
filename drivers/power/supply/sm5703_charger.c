@@ -49,6 +49,7 @@ struct sm5703_charger {
 	struct mutex lock;
 
 	bool source_online;
+	bool user_enabled;
 	enum power_supply_usb_type usb_type;
 	int input_current_ua;
 	int fast_current_ua;
@@ -159,8 +160,9 @@ static int sm5703_set_charging_locked(struct sm5703_charger *charger,
 	int ret;
 
 	if (!enable) {
-		gpiod_set_value_cansleep(charger->enable_gpio, 0);
 		ret = sm5703_set_charging(charger->sm5703, false);
+		if (!ret)
+			gpiod_set_value_cansleep(charger->enable_gpio, 0);
 		return ret;
 	}
 
@@ -230,6 +232,7 @@ static enum power_supply_property sm5703_charger_properties[] = {
 	POWER_SUPPLY_PROP_PRESENT,
 	POWER_SUPPLY_PROP_ONLINE,
 	POWER_SUPPLY_PROP_USB_TYPE,
+	POWER_SUPPLY_PROP_CHARGE_BEHAVIOUR,
 	POWER_SUPPLY_PROP_INPUT_CURRENT_LIMIT,
 	POWER_SUPPLY_PROP_INPUT_VOLTAGE_LIMIT,
 	POWER_SUPPLY_PROP_CONSTANT_CHARGE_CURRENT,
@@ -277,6 +280,11 @@ static int sm5703_charger_get_property(struct power_supply *psy,
 	case POWER_SUPPLY_PROP_USB_TYPE:
 		val->intval = READ_ONCE(charger->usb_type);
 		break;
+	case POWER_SUPPLY_PROP_CHARGE_BEHAVIOUR:
+		val->intval = READ_ONCE(charger->user_enabled) ?
+			POWER_SUPPLY_CHARGE_BEHAVIOUR_AUTO :
+			POWER_SUPPLY_CHARGE_BEHAVIOUR_INHIBIT_CHARGE;
+		break;
 	case POWER_SUPPLY_PROP_INPUT_CURRENT_LIMIT:
 		val->intval = READ_ONCE(charger->input_current_ua);
 		break;
@@ -315,10 +323,29 @@ static int sm5703_charger_set_property(struct power_supply *psy,
 				       const union power_supply_propval *val)
 {
 	struct sm5703_charger *charger = power_supply_get_drvdata(psy);
+	bool old_enabled;
 	int ret;
 
 	mutex_lock(&charger->lock);
 	switch (psp) {
+	case POWER_SUPPLY_PROP_CHARGE_BEHAVIOUR:
+		old_enabled = charger->user_enabled;
+		if (val->intval == POWER_SUPPLY_CHARGE_BEHAVIOUR_AUTO) {
+			charger->user_enabled = true;
+		} else if (val->intval ==
+			   POWER_SUPPLY_CHARGE_BEHAVIOUR_INHIBIT_CHARGE) {
+			charger->user_enabled = false;
+		} else {
+			ret = -EINVAL;
+			break;
+		}
+
+		ret = sm5703_set_charging_locked(charger,
+						 charger->source_online &&
+						 charger->user_enabled);
+		if (ret)
+			charger->user_enabled = old_enabled;
+		break;
 	case POWER_SUPPLY_PROP_INPUT_CURRENT_LIMIT:
 		if (val->intval < SM5703_INPUT_CURRENT_MIN_UA ||
 		    val->intval > SM5703_INPUT_CURRENT_MAX_UA)
@@ -348,7 +375,8 @@ static int sm5703_charger_set_property(struct power_supply *psy,
 static int sm5703_charger_property_is_writeable(struct power_supply *psy,
 						enum power_supply_property psp)
 {
-	return psp == POWER_SUPPLY_PROP_INPUT_CURRENT_LIMIT ||
+	return psp == POWER_SUPPLY_PROP_CHARGE_BEHAVIOUR ||
+		psp == POWER_SUPPLY_PROP_INPUT_CURRENT_LIMIT ||
 		psp == POWER_SUPPLY_PROP_CONSTANT_CHARGE_CURRENT;
 }
 
@@ -364,6 +392,8 @@ static const struct power_supply_desc sm5703_charger_desc = {
 	.get_property = sm5703_charger_get_property,
 	.set_property = sm5703_charger_set_property,
 	.property_is_writeable = sm5703_charger_property_is_writeable,
+	.charge_behaviours = BIT(POWER_SUPPLY_CHARGE_BEHAVIOUR_AUTO) |
+			     BIT(POWER_SUPPLY_CHARGE_BEHAVIOUR_INHIBIT_CHARGE),
 };
 
 static int sm5703_apply_source_locked(struct sm5703_charger *charger,
@@ -407,7 +437,7 @@ static int sm5703_apply_source_locked(struct sm5703_charger *charger,
 
 	charger->source_online = true;
 	charger->usb_type = type;
-	ret = sm5703_set_charging_locked(charger, true);
+	ret = sm5703_set_charging_locked(charger, charger->user_enabled);
 	if (ret) {
 		charger->source_online = false;
 		charger->usb_type = POWER_SUPPLY_USB_TYPE_UNKNOWN;
@@ -724,6 +754,7 @@ static int sm5703_charger_probe(struct platform_device *pdev)
 	charger->dev = &pdev->dev;
 	charger->sm5703 = dev_get_drvdata(pdev->dev.parent);
 	charger->regmap = charger->sm5703->regmap;
+	charger->user_enabled = true;
 	charger->usb_type = POWER_SUPPLY_USB_TYPE_UNKNOWN;
 	charger->dcp_input_current_ua = 1000000;
 	charger->aicl_voltage_uv = SM5703_AICL_VOLTAGE_MIN_UV;
