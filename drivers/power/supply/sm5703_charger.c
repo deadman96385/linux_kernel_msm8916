@@ -923,6 +923,20 @@ static void sm5703_charger_stop(void *data)
 			 "failed to disable charging during teardown: %d\n", ret);
 }
 
+static void sm5703_charger_shutdown(struct platform_device *pdev)
+{
+	struct sm5703_charger *charger = platform_get_drvdata(pdev);
+
+	/*
+	 * Quiesce policy work without applying the removal policy.  The parent
+	 * MFD performs the bootloader handoff after its children have shut down.
+	 */
+	WRITE_ONCE(charger->stopping, true);
+	cancel_work_sync(&charger->extcon_work);
+	cancel_delayed_work_sync(&charger->aicl_work);
+	cancel_delayed_work_sync(&charger->monitor_work);
+}
+
 static int sm5703_get_battery_info(struct sm5703_charger *charger)
 {
 	struct power_supply_battery_info *info;
@@ -1130,6 +1144,7 @@ static struct platform_driver sm5703_charger_driver = {
 		.of_match_table = sm5703_charger_of_match,
 	},
 	.probe = sm5703_charger_probe,
+	.shutdown = sm5703_charger_shutdown,
 	.id_table = sm5703_charger_id,
 };
 module_platform_driver(sm5703_charger_driver);

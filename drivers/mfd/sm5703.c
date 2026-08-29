@@ -269,6 +269,26 @@ static int sm5703_probe(struct i2c_client *client)
 	return 0;
 }
 
+static void sm5703_shutdown(struct i2c_client *client)
+{
+	struct sm5703 *sm5703 = i2c_get_clientdata(client);
+	int ret;
+
+	/*
+	 * Samsung's downstream driver leaves the PMIC in charging mode for the
+	 * bootloader.  Preserve the external nCHGEN state selected by the charger
+	 * child, but never hand off an active OTG boost or charging-off mode.
+	 */
+	mutex_lock(&sm5703->mode_lock);
+	sm5703->otg_enabled = false;
+	sm5703->charge_requested = true;
+	ret = sm5703_update_mode_locked(sm5703);
+	mutex_unlock(&sm5703->mode_lock);
+	if (ret)
+		dev_warn(sm5703->dev,
+			 "failed to prepare charger for shutdown: %d\n", ret);
+}
+
 static const struct of_device_id sm5703_of_match[] = {
 	{ .compatible = "siliconmitus,sm5703" },
 	{ }
@@ -287,6 +307,7 @@ static struct i2c_driver sm5703_driver = {
 		.of_match_table = sm5703_of_match,
 	},
 	.probe = sm5703_probe,
+	.shutdown = sm5703_shutdown,
 	.id_table = sm5703_i2c_id,
 };
 module_i2c_driver(sm5703_driver);
