@@ -51,6 +51,7 @@ struct tm2_touchkey_data {
 	const struct touchkey_variant *variant;
 	u32 keycodes[4];
 	int num_keycodes;
+	bool powered;
 };
 
 static const struct touchkey_variant tm2_touchkey_variant = {
@@ -89,6 +90,10 @@ static int tm2_touchkey_led_brightness_set(struct led_classdev *led_dev,
 		container_of(led_dev, struct tm2_touchkey_data, led_dev);
 	u32 volt;
 	u8 data;
+	int error;
+
+	if (!touchkey->powered)
+		return 0;
 
 	if (brightness == LED_OFF) {
 		volt = TM2_TOUCHKEY_LED_VOLTAGE_MIN;
@@ -98,8 +103,11 @@ static int tm2_touchkey_led_brightness_set(struct led_classdev *led_dev,
 		data = touchkey->variant->cmd_led_on;
 	}
 
-	if (!touchkey->variant->fixed_regulator)
-		regulator_set_voltage(touchkey->vdd, volt, volt);
+	if (!touchkey->variant->fixed_regulator) {
+		error = regulator_set_voltage(touchkey->vdd, volt, volt);
+		if (error)
+			return error;
+	}
 
 	return touchkey->variant->no_reg ?
 		i2c_smbus_write_byte(touchkey->client, data) :
@@ -111,10 +119,15 @@ static int tm2_touchkey_power_enable(struct tm2_touchkey_data *touchkey)
 {
 	int error;
 
+	if (touchkey->powered)
+		return 0;
+
 	error = regulator_bulk_enable(ARRAY_SIZE(touchkey->regulators),
 				      touchkey->regulators);
 	if (error)
 		return error;
+
+	touchkey->powered = true;
 
 	/* waiting for device initialization, at least 150ms */
 	msleep(150);
@@ -126,8 +139,12 @@ static void tm2_touchkey_power_disable(void *data)
 {
 	struct tm2_touchkey_data *touchkey = data;
 
+	if (!touchkey->powered)
+		return;
+
 	regulator_bulk_disable(ARRAY_SIZE(touchkey->regulators),
 			       touchkey->regulators);
+	touchkey->powered = false;
 }
 
 static irqreturn_t tm2_touchkey_irq_handler(int irq, void *devid)
@@ -169,8 +186,8 @@ static irqreturn_t tm2_touchkey_irq_handler(int irq, void *devid)
 	input_sync(touchkey->input_dev);
 
 out:
-	if (touchkey->variant->fixed_regulator &&
-				data & TM2_TOUCHKEY_BIT_PRESS_EV) {
+	if (data >= 0 && touchkey->variant->fixed_regulator &&
+	    data & TM2_TOUCHKEY_BIT_PRESS_EV) {
 		/* touch turns backlight on, so make sure we're in sync */
 		if (touchkey->led_dev.brightness == LED_OFF)
 			tm2_touchkey_led_brightness_set(&touchkey->led_dev,
@@ -201,6 +218,8 @@ static int tm2_touchkey_probe(struct i2c_client *client)
 	i2c_set_clientdata(client, touchkey);
 
 	touchkey->variant = of_device_get_match_data(&client->dev);
+	if (!touchkey->variant)
+		touchkey->variant = &tm2_touchkey_variant;
 
 	touchkey->regulators[0].supply = "vcc";
 	touchkey->regulators[1].supply = "vdd";
@@ -300,8 +319,15 @@ static int tm2_touchkey_suspend(struct device *dev)
 {
 	struct i2c_client *client = to_i2c_client(dev);
 	struct tm2_touchkey_data *touchkey = i2c_get_clientdata(client);
+	int i;
 
 	disable_irq(client->irq);
+
+	for (i = 0; i < touchkey->num_keycodes; i++)
+		input_report_key(touchkey->input_dev,
+				 touchkey->keycodes[i], false);
+	input_sync(touchkey->input_dev);
+
 	tm2_touchkey_power_disable(touchkey);
 
 	return 0;
@@ -311,15 +337,22 @@ static int tm2_touchkey_resume(struct device *dev)
 {
 	struct i2c_client *client = to_i2c_client(dev);
 	struct tm2_touchkey_data *touchkey = i2c_get_clientdata(client);
-	int ret;
+	int error;
+
+	error = tm2_touchkey_power_enable(touchkey);
+	if (error) {
+		dev_err(dev, "failed to enable power: %d\n", error);
+		return error;
+	}
+
+	error = tm2_touchkey_led_brightness_set(&touchkey->led_dev,
+						touchkey->led_dev.brightness);
+	if (error)
+		dev_warn(dev, "failed to restore LED state: %d\n", error);
 
 	enable_irq(client->irq);
 
-	ret = tm2_touchkey_power_enable(touchkey);
-	if (ret)
-		dev_err(dev, "failed to enable power: %d\n", ret);
-
-	return ret;
+	return 0;
 }
 
 static DEFINE_SIMPLE_DEV_PM_OPS(tm2_touchkey_pm_ops,
