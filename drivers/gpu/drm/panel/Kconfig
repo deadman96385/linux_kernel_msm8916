@@ -1017,6 +1017,16 @@ config DRM_PANEL_SAMSUNG_S6E8AA5X01_AMS561RA01
 	  ~5.6 inch AMOLED display, and the controller is driven by the MIPI
 	  DSI protocol with 4 lanes.
 
+config DRM_PANEL_SAMSUNG_S6E8AA5X01_DIMMING_KUNIT_TEST
+	tristate "KUnit tests for Samsung S6E8AA5X01 smart dimming" if !KUNIT_ALL_TESTS
+	depends on KUNIT
+	default KUNIT_ALL_TESTS
+	help
+	  Test the checked smart-dimming calculation and J5/J5x policy data.
+	  The suite covers MTP parsing, voltage and gamma generation, and policy
+	  table validation. It does not perform DSI reads or writes and has no
+	  effect on normal panel-driver builds.
+
 config DRM_PANEL_SAMSUNG_S6E8FC0
 	tristate "Samsung S6E8FC0 DSI controller"
 	depends on OF
