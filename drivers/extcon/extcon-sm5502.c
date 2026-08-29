@@ -90,6 +90,7 @@ struct sm5502_type {
 	unsigned int vbus_valid_reg;
 	unsigned int vbus_valid_mask;
 	unsigned int detect_delay_ms;
+	unsigned int usb_vbus_sw;
 	bool force_manual_path;
 	bool ack_irqs_before_enable;
 	int (*parse_irq)(struct sm5502_muic_info *info, int irq_type);
@@ -466,6 +467,8 @@ static int sm5502_muic_set_path(struct sm5502_muic_info *info,
 			return ret;
 		}
 	}
+	dev_dbg(info->dev, "switch path: dpdm=0x%x vbus=0x%x attached=%u\n",
+		con_sw, vbus_sw, attached);
 
 	return 0;
 }
@@ -659,13 +662,13 @@ static int sm5502_muic_cable_handler(struct sm5502_muic_info *info,
 		id	= EXTCON_USB;
 		charger_id = EXTCON_CHG_USB_SDP;
 		con_sw	= DM_DP_SWITCH_USB;
-		vbus_sw	= VBUSIN_SWITCH_VBUSOUT_WITH_USB;
+		vbus_sw	= info->type->usb_vbus_sw;
 		break;
 	case SM5502_MUIC_ADC_OPEN_USB_CDP:
 		id	= EXTCON_USB;
 		charger_id = EXTCON_CHG_USB_CDP;
 		con_sw	= DM_DP_SWITCH_USB;
-		vbus_sw	= VBUSIN_SWITCH_VBUSOUT_WITH_USB;
+		vbus_sw	= info->type->usb_vbus_sw;
 		break;
 	case SM5502_MUIC_ADC_OPEN_TA:
 		id	= EXTCON_CHG_USB_DCP;
@@ -717,6 +720,8 @@ static int sm5502_muic_update_cable(struct sm5502_muic_info *info,
 
 	if (!sm5502_muic_cable_supported(cable_type))
 		cable_type = SM5502_MUIC_ADC_GROUND;
+	dev_dbg(info->dev, "cable state: current=0x%x previous=0x%x restore=%u\n",
+		cable_type, info->prev_cable_type, force_path);
 
 	if (cable_type == info->prev_cable_type) {
 		if (force_path && sm5502_muic_cable_supported(cable_type))
@@ -1121,6 +1126,7 @@ static const struct sm5502_type sm5502_data = {
 	.num_reg_data = ARRAY_SIZE(sm5502_reg_data),
 	.otg_dev_type1 = SM5502_REG_DEV_TYPE1_USB_OTG_MASK,
 	.detect_delay_ms = DELAY_MS_DEFAULT,
+	.usb_vbus_sw = VBUSIN_SWITCH_VBUSOUT_WITH_USB,
 	.parse_irq = sm5502_parse_irq,
 };
 
@@ -1132,6 +1138,7 @@ static const struct sm5502_type sm5504_data = {
 	.num_reg_data = ARRAY_SIZE(sm5504_reg_data),
 	.otg_dev_type1 = SM5504_REG_DEV_TYPE1_USB_OTG_MASK,
 	.detect_delay_ms = DELAY_MS_DEFAULT,
+	.usb_vbus_sw = VBUSIN_SWITCH_VBUSOUT_WITH_USB,
 	.parse_irq = sm5504_parse_irq,
 };
 
@@ -1147,6 +1154,7 @@ static const struct sm5502_type sm5703_data = {
 	.vbus_valid_reg = SM5703_REG_VBUSINVALID,
 	.vbus_valid_mask = SM5703_REG_VBUSIN_VALID_MASK,
 	.detect_delay_ms = DELAY_MS_SM5703,
+	.usb_vbus_sw = VBUSIN_SWITCH_VBUSOUT,
 	.force_manual_path = true,
 	.ack_irqs_before_enable = true,
 	.parse_irq = sm5703_parse_irq,
