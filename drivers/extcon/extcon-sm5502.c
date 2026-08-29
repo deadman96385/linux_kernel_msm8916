@@ -97,6 +97,8 @@ struct sm5502_type {
 	int (*parse_irq)(struct sm5502_muic_info *info, int irq_type);
 };
 
+static int sm5502_init_dev_type(struct sm5502_muic_info *info);
+
 /* Default value of SM5502 register to bring up MUIC device. */
 static struct reg_data sm5502_reg_data[] = {
 	{
@@ -711,7 +713,22 @@ static int sm5502_muic_cable_handler(struct sm5502_muic_info *info,
 static int sm5502_muic_update_cable(struct sm5502_muic_info *info,
 				    bool force_path)
 {
+	unsigned int control;
 	int cable_type, ret;
+
+	if (info->type->force_manual_path) {
+		ret = regmap_read(info->regmap, SM5502_REG_CONTROL, &control);
+		if (ret)
+			return ret;
+		if (control == SM5703_CONTROL_RESET_DEFAULT) {
+			dev_warn(info->dev,
+				 "MUIC reset detected, restoring configuration\n");
+			ret = sm5502_init_dev_type(info);
+			if (ret)
+				return ret;
+			force_path = true;
+		}
+	}
 
 	cable_type = sm5502_muic_get_cable_type(info);
 	if (cable_type == -EINVAL || cable_type == -ENODEV)
@@ -776,16 +793,17 @@ static void sm5502_muic_irq_work(struct work_struct *work)
 
 		mutex_lock(&info->mutex);
 		ret = sm5502_muic_update_cable(info, false);
-		if (ret == -EAGAIN)
+		if (ret < 0)
 			info->detect_retries = 0;
 		mutex_unlock(&info->mutex);
-		if (ret == -EAGAIN) {
+		if (ret < 0) {
 			mod_delayed_work(system_power_efficient_wq,
 					 &info->wq_detcable,
 					 msecs_to_jiffies(DETECT_RETRY_MS));
-		} else if (ret) {
-			dev_err(info->dev,
-				"failed to rescan MUIC cable state: %d\n", ret);
+			if (ret != -EAGAIN)
+				dev_warn(info->dev,
+					 "MUIC cable rescan incomplete, retrying: %d\n",
+					 ret);
 		}
 	}
 }
