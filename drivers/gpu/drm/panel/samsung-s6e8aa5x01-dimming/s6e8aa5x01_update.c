@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-2.0-only
-// Portable-source SHA-256: c122a3f3493851681f365ec9b99897b9084754aac836a3cc85c76fa972e871ed
+// Portable-source SHA-256: 584cbd3c9a74ab2d852d65a101e211e7eef937520a68503208b4634ffdd13bbf
 #include "s6e8aa5x01_update.h"
 
 #include <linux/errno.h>
@@ -33,9 +33,10 @@ static int s6e8aa5x01_variant_validate(const struct s6e8aa5x01_variant *variant)
 
 int s6e8aa5x01_normal_update_build(struct s6e8aa5x01_normal_update *result,
 				   const struct s6e8aa5x01_variant *variant,
-	const struct s6e8aa5x01_dimming *dimming,
-	unsigned int brightness, bool acl_enabled, int temperature,
-	bool factory_elvss_valid, u8 factory_elvss)
+				   const struct s6e8aa5x01_dimming *dimming,
+				   unsigned int brightness, bool acl_enabled,
+				   int temperature, bool factory_elvss_valid,
+				   u8 factory_elvss)
 {
 	struct s6e8aa5x01_normal_update calculated = { 0 };
 	struct s6e8aa5x01_temperature_result temperature_result;
@@ -57,8 +58,11 @@ int s6e8aa5x01_normal_update_build(struct s6e8aa5x01_normal_update *result,
 	gamma = s6e8aa5x01_dimming_gamma(dimming, calculated.level);
 	if (!gamma)
 		return -EINVAL;
-	ret = s6e8aa5x01_temperature_resolve(&temperature_result, variant->policy, calculated.level,
-					     temperature, factory_elvss_valid, factory_elvss);
+	ret = s6e8aa5x01_temperature_resolve(&temperature_result,
+					     variant->policy,
+					     calculated.level, temperature,
+					     factory_elvss_valid,
+					     factory_elvss);
 	if (ret)
 		return ret;
 
@@ -83,7 +87,50 @@ int s6e8aa5x01_normal_update_build(struct s6e8aa5x01_normal_update *result,
 	memcpy(&calculated.gamma[1], gamma, S6E8AA5X01_GAMMA_LEN);
 	calculated.gamma_latch[0] = 0xf7;
 	calculated.gamma_latch[1] = 0x03;
+	calculated.valid = true;
 
 	*result = calculated;
+	return 0;
+}
+
+int s6e8aa5x01_normal_update_emit(const struct s6e8aa5x01_normal_update *update,
+				  s6e8aa5x01_write_fn write, void *context)
+{
+	const u8 *commands[S6E8AA5X01_NUM_NORMAL_UPDATE_COMMANDS];
+	const u8 lengths[S6E8AA5X01_NUM_NORMAL_UPDATE_COMMANDS] = {
+		S6E8AA5X01_PANEL_COMMAND_LEN,
+		S6E8AA5X01_POLICY_COMMAND_LEN,
+		S6E8AA5X01_POLICY_COMMAND_LEN,
+		S6E8AA5X01_PANEL_COMMAND_LEN,
+		S6E8AA5X01_POLICY_COMMAND_LEN,
+		S6E8AA5X01_POLICY_COMMAND_LEN,
+		S6E8AA5X01_POLICY_COMMAND_LEN,
+		S6E8AA5X01_POLICY_COMMAND_LEN,
+		S6E8AA5X01_GAMMA_COMMAND_LEN,
+		S6E8AA5X01_POLICY_COMMAND_LEN,
+	};
+	size_t i;
+	int ret;
+
+	if (!update || !update->valid || !write)
+		return -EINVAL;
+
+	commands[0] = update->aid;
+	commands[1] = update->acl[0];
+	commands[2] = update->acl[1];
+	commands[3] = update->elvss;
+	commands[4] = update->temperature[0];
+	commands[5] = update->temperature[1];
+	commands[6] = update->temperature_elvss[0];
+	commands[7] = update->temperature_elvss[1];
+	commands[8] = update->gamma;
+	commands[9] = update->gamma_latch;
+
+	for (i = 0; i < S6E8AA5X01_NUM_NORMAL_UPDATE_COMMANDS; i++) {
+		ret = write(context, commands[i], lengths[i]);
+		if (ret)
+			return ret;
+	}
+
 	return 0;
 }

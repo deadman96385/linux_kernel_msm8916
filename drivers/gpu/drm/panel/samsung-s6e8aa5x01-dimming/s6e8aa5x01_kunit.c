@@ -122,9 +122,66 @@ static void s6e8aa5x01_policy_test(struct kunit *test)
 							     21, 20, false, 0), -ENODATA);
 }
 
+struct s6e8aa5x01_emit_capture {
+	struct kunit *test;
+	const u8 *expected;
+	size_t count;
+	size_t fail_at;
+};
+
+static int s6e8aa5x01_capture_command(void *context, const u8 *data,
+				      size_t length)
+{
+	static const size_t expected_lengths[S6E8AA5X01_NUM_NORMAL_UPDATE_COMMANDS] = {
+		3, 2, 2, 3, 2, 2, 2, 2, 34, 2,
+	};
+	struct s6e8aa5x01_emit_capture *capture = context;
+	size_t index = capture->count++;
+
+	if (index >= S6E8AA5X01_NUM_NORMAL_UPDATE_COMMANDS)
+		return -EOVERFLOW;
+
+	KUNIT_EXPECT_EQ(capture->test, data[0], capture->expected[index]);
+	KUNIT_EXPECT_EQ(capture->test, length, expected_lengths[index]);
+
+	return index == capture->fail_at ? -EIO : 0;
+}
+
+static void s6e8aa5x01_expect_emit(struct kunit *test,
+				   const struct s6e8aa5x01_normal_update *update,
+				   const u8 expected[S6E8AA5X01_NUM_NORMAL_UPDATE_COMMANDS])
+{
+	struct s6e8aa5x01_emit_capture capture = {
+		.test = test,
+		.expected = expected,
+		.fail_at = SIZE_MAX,
+	};
+
+	KUNIT_EXPECT_EQ(test,
+			s6e8aa5x01_normal_update_emit(update,
+						      s6e8aa5x01_capture_command,
+						      &capture), 0);
+	KUNIT_EXPECT_EQ(test, capture.count,
+			S6E8AA5X01_NUM_NORMAL_UPDATE_COMMANDS);
+}
+
 static void s6e8aa5x01_update_test(struct kunit *test)
 {
+	static const u8 j5_commands[S6E8AA5X01_NUM_NORMAL_UPDATE_COMMANDS] = {
+		0xb2, 0x55, 0xb5, 0xb6, 0xb0,
+		0xb8, 0xb0, 0xb6, 0xca, 0xf7,
+	};
+	static const u8 j5x_commands[S6E8AA5X01_NUM_NORMAL_UPDATE_COMMANDS] = {
+		0xb2, 0xb5, 0x55, 0xb6, 0xb0,
+		0xb8, 0xb0, 0xb6, 0xca, 0xf7,
+	};
 	static const u8 zero_mtp[S6E8AA5X01_MTP_LEN];
+	struct s6e8aa5x01_emit_capture capture = {
+		.test = test,
+		.expected = j5_commands,
+		.fail_at = 4,
+	};
+	struct s6e8aa5x01_normal_update invalid = { };
 	struct s6e8aa5x01_normal_update update;
 	struct s6e8aa5x01_dimming *dimming;
 
@@ -136,6 +193,7 @@ static void s6e8aa5x01_update_test(struct kunit *test)
 			s6e8aa5x01_normal_update_build(&update,
 						       &s6e8aa5x01_j5_a_variant, dimming,
 				0, false, 20, false, 0), 0);
+	KUNIT_EXPECT_TRUE(test, update.valid);
 	KUNIT_EXPECT_EQ(test, update.level, (u8)0);
 	KUNIT_EXPECT_FALSE(test, update.acl_enabled);
 	KUNIT_EXPECT_FALSE(test, update.uses_factory_elvss);
@@ -151,6 +209,26 @@ static void s6e8aa5x01_update_test(struct kunit *test)
 			   S6E8AA5X01_GAMMA_LEN);
 	KUNIT_EXPECT_EQ(test, update.gamma_latch[0], (u8)0xf7);
 	KUNIT_EXPECT_EQ(test, update.gamma_latch[1], (u8)0x03);
+	s6e8aa5x01_expect_emit(test, &update, j5_commands);
+	KUNIT_EXPECT_EQ(test,
+			s6e8aa5x01_normal_update_emit(&update,
+						      s6e8aa5x01_capture_command,
+						      &capture),
+			-EIO);
+	KUNIT_EXPECT_EQ(test, capture.count, (size_t)5);
+	KUNIT_EXPECT_EQ(test,
+			s6e8aa5x01_normal_update_emit(NULL,
+						      s6e8aa5x01_capture_command,
+						      &capture),
+			-EINVAL);
+	KUNIT_EXPECT_EQ(test,
+			s6e8aa5x01_normal_update_emit(&invalid,
+						      s6e8aa5x01_capture_command,
+						      &capture),
+			-EINVAL);
+	KUNIT_EXPECT_EQ(test,
+			s6e8aa5x01_normal_update_emit(&update, NULL, &capture),
+			-EINVAL);
 
 	KUNIT_EXPECT_EQ(test,
 			s6e8aa5x01_normal_update_build(&update,
@@ -162,6 +240,7 @@ static void s6e8aa5x01_update_test(struct kunit *test)
 			s6e8aa5x01_normal_update_build(&update,
 						       &s6e8aa5x01_j5x_variant, dimming,
 				71, true, -15, true, 0x31), 0);
+	KUNIT_EXPECT_TRUE(test, update.valid);
 	KUNIT_EXPECT_EQ(test, update.level, (u8)40);
 	KUNIT_EXPECT_TRUE(test, update.acl_enabled);
 	KUNIT_EXPECT_TRUE(test, update.uses_factory_elvss);
@@ -169,6 +248,7 @@ static void s6e8aa5x01_update_test(struct kunit *test)
 	KUNIT_EXPECT_EQ(test, update.acl[1][0], (u8)0x55);
 	KUNIT_EXPECT_EQ(test, update.temperature[1][1], (u8)0x8f);
 	KUNIT_EXPECT_EQ(test, update.temperature_elvss[1][1], (u8)0x31);
+	s6e8aa5x01_expect_emit(test, &update, j5x_commands);
 
 	memset(&update, 0xa5, sizeof(update));
 	KUNIT_EXPECT_EQ(test,
