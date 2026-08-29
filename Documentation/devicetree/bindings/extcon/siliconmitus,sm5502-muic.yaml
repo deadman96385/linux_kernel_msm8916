@@ -34,6 +34,8 @@ properties:
   interrupts:
     maxItems: 1
 
+  wakeup-source: true
+
 required:
   - compatible
   - reg
