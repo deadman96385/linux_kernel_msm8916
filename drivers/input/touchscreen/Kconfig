@@ -711,6 +711,17 @@ config TOUCHSCREEN_IMAGIS
 	  To compile this driver as a module, choose M here: the
 	  module will be called imagis.
 
+config TOUCHSCREEN_IMAGIS_KUNIT_TEST
+	tristate "KUnit tests for the Imagis frame parser" if !KUNIT_ALL_TESTS
+	depends on KUNIT
+	default KUNIT_ALL_TESTS
+	help
+	  Builds tests for protocol B interrupt validation, checksums,
+	  coordinate bounds, key capabilities, and dense coordinate to
+	  multitouch slot mapping.
+
+	  If unsure, say N.
+
 config TOUCHSCREEN_IMX6UL_TSC
 	tristate "Freescale i.MX6UL touchscreen controller"
 	depends on ((OF && GPIOLIB) || COMPILE_TEST) && HAS_IOMEM

@@ -16,6 +16,8 @@
 #include <linux/regulator/consumer.h>
 #include <linux/workqueue.h>
 
+#include "imagis-frame.h"
+
 #define IST30XX_REG_STATUS		0x20
 #define IST30XX_REG_CHIPID		(0x40000000 | IST3038C_DIRECT_ACCESS)
 
@@ -43,16 +45,6 @@
 #define IST3038C_CMD_DELAY_MS		40
 #define IST3038C_I2C_RETRY_COUNT	3
 #define IST3038C_MAX_ERROR_COUNT	100
-#define IST3038C_MAX_FINGER_NUM		10
-#define IST3038C_X_MASK			GENMASK(23, 12)
-#define IST3038C_Y_MASK			GENMASK(11, 0)
-#define IST3038C_AREA_MASK		GENMASK(27, 24)
-#define IST3038C_FINGER_COUNT_MASK	GENMASK(15, 12)
-#define IST3038C_FINGER_STATUS_MASK	GENMASK(9, 0)
-#define IST3032C_KEY_STATUS_MASK	GENMASK(20, 16)
-#define IST3032C_KEY_COUNT_MASK		GENMASK(23, 21)
-#define IST3038C_INTR_STATUS_MASK	GENMASK(11, 10)
-#define IST3038C_INTR_CHECKSUM_MASK	GENMASK(31, 24)
 #define IST3038C_CMD_SET_SPECIAL_MODE	0x22
 #define IST3038C_SPECIAL_MODE_CHARGER	BIT(0)
 
@@ -211,31 +203,16 @@ static int imagis_extcon_notifier(struct notifier_block *nb,
 	return NOTIFY_OK;
 }
 
-static u8 imagis_frame_checksum(u32 intr_message, const u32 *coords,
-				unsigned int finger_count)
-{
-	u8 checksum = intr_message;
-	unsigned int i;
-
-	checksum += intr_message >> 8;
-	checksum += intr_message >> 16;
-
-	for (i = 0; i < finger_count; i++) {
-		checksum += coords[i];
-		checksum += coords[i] >> 8;
-		checksum += coords[i] >> 16;
-		checksum += coords[i] >> 24;
-	}
-
-	return checksum;
-}
-
 static int imagis_read_frame(struct imagis_ts *ts, u32 intr_message,
-			     unsigned int finger_count, u32 *coords)
+			     u32 *coords, struct imagis_frame *frame)
 {
-	unsigned int expected_checksum;
+	unsigned int finger_count;
 	unsigned int i;
 	int error;
+
+	finger_count = FIELD_GET(IST3038C_FINGER_COUNT_MASK, intr_message);
+	if (finger_count > IST3038C_MAX_FINGER_NUM)
+		return -EOVERFLOW;
 
 	if ((intr_message & IST3038C_INTR_STATUS_MASK) !=
 	    IST3038C_INTR_STATUS_MASK)
@@ -249,28 +226,19 @@ static int imagis_read_frame(struct imagis_ts *ts, u32 intr_message,
 			return error;
 	}
 
-	expected_checksum = FIELD_GET(IST3038C_INTR_CHECKSUM_MASK,
-				      intr_message);
-	if (imagis_frame_checksum(intr_message, coords, finger_count) !=
-	    expected_checksum)
-		return -EBADMSG;
-
-	for (i = 0; i < finger_count; i++) {
-		if (FIELD_GET(IST3038C_X_MASK, coords[i]) > ts->prop.max_x ||
-		    FIELD_GET(IST3038C_Y_MASK, coords[i]) > ts->prop.max_y)
-			return -ERANGE;
-	}
-
-	return 0;
+	return imagis_parse_frame(frame, intr_message, coords, finger_count,
+				  ts->prop.max_x, ts->prop.max_y,
+				  ARRAY_SIZE(ts->keycodes));
 }
 
 static irqreturn_t imagis_interrupt(int irq, void *dev_id)
 {
 	struct imagis_ts *ts = dev_id;
+	struct imagis_frame frame;
 	u32 coords[IST3038C_MAX_FINGER_NUM];
 	u32 intr_message, finger_status;
-	unsigned int finger_count, finger_pressed, key_count, key_pressed;
-	unsigned int coord_index = 0;
+	unsigned int finger_count, finger_pressed, key_pressed;
+	unsigned int coord_index;
 	int i;
 	int error;
 
@@ -292,39 +260,25 @@ static irqreturn_t imagis_interrupt(int irq, void *dev_id)
 	}
 
 	finger_pressed = FIELD_GET(IST3038C_FINGER_STATUS_MASK, intr_message);
-	if (ts->tdata->protocol_b && hweight32(finger_pressed) != finger_count) {
-		dev_warn_ratelimited(&ts->client->dev,
-				     "finger count and status bitmap disagree\n");
-		imagis_request_reset(ts);
-		goto out;
-	}
-	key_count = FIELD_GET(IST3032C_KEY_COUNT_MASK, intr_message);
 	key_pressed = FIELD_GET(IST3032C_KEY_STATUS_MASK, intr_message);
-	if (ts->tdata->protocol_b &&
-	    (key_count > ARRAY_SIZE(ts->keycodes) ||
-	     hweight32(key_pressed) != key_count)) {
-		dev_warn_ratelimited(&ts->client->dev,
-				     "key count and status bitmap disagree\n");
-		imagis_request_reset(ts);
-		goto out;
-	}
 
 	if (ts->tdata->protocol_b) {
-		error = imagis_read_frame(ts, intr_message, finger_count, coords);
+		error = imagis_read_frame(ts, intr_message, coords, &frame);
 		if (error) {
 			dev_warn_ratelimited(&ts->client->dev,
 					     "invalid touch frame: %d\n", error);
 			imagis_request_reset(ts);
 			goto out;
 		}
+
+		finger_count = frame.finger_count;
+		key_pressed = frame.key_status;
 	}
 
 	if (ts->tdata->protocol_b) {
-		for (i = 0; i < IST3038C_MAX_FINGER_NUM; i++) {
-			if (!(finger_pressed & BIT(i)))
-				continue;
-
-			finger_status = coords[coord_index++];
+		for (coord_index = 0; coord_index < finger_count; coord_index++) {
+			i = frame.slot_for_coord[coord_index];
+			finger_status = coords[coord_index];
 			input_mt_slot(ts->input_dev, i);
 			input_mt_report_slot_state(ts->input_dev,
 						   MT_TOOL_FINGER, true);
