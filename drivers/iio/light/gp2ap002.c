@@ -764,7 +764,7 @@ static int gp2ap002_suspend(struct device *dev)
 
 	/* Leave an enabled proximity event active as a system wake source. */
 	if (device_may_wakeup(dev) && READ_ONCE(gp2ap002->enabled))
-		return 0;
+		return enable_irq_wake(gp2ap002->irq);
 
 	return pm_runtime_force_suspend(dev);
 }
@@ -775,7 +775,7 @@ static int gp2ap002_resume(struct device *dev)
 	struct gp2ap002 *gp2ap002 = iio_priv(indio_dev);
 
 	if (device_may_wakeup(dev) && READ_ONCE(gp2ap002->enabled))
-		return 0;
+		return disable_irq_wake(gp2ap002->irq);
 
 	return pm_runtime_force_resume(dev);
 }

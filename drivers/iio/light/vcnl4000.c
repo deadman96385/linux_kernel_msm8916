@@ -2236,7 +2236,7 @@ static int vcnl4000_suspend(struct device *dev)
 	/* Keep active threshold events available as system wake sources. */
 	if (device_may_wakeup(dev) &&
 	    (READ_ONCE(data->ps_int) || READ_ONCE(data->als_int)))
-		return 0;
+		return enable_irq_wake(data->client->irq);
 
 	return pm_runtime_force_suspend(dev);
 }
@@ -2248,7 +2248,7 @@ static int vcnl4000_resume(struct device *dev)
 
 	if (device_may_wakeup(dev) &&
 	    (READ_ONCE(data->ps_int) || READ_ONCE(data->als_int)))
-		return 0;
+		return disable_irq_wake(data->client->irq);
 
 	return pm_runtime_force_resume(dev);
 }
