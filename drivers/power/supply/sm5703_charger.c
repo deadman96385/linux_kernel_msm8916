@@ -395,6 +395,9 @@ static int sm5703_charger_set_property(struct power_supply *psy,
 			ret = -EINVAL;
 		else
 			ret = sm5703_set_input_current(charger, val->intval);
+		if (!ret && charger->source_online)
+			mod_delayed_work(system_wq, &charger->aicl_work,
+					 msecs_to_jiffies(SM5703_AICL_START_DELAY_MS));
 		break;
 	case POWER_SUPPLY_PROP_CONSTANT_CHARGE_CURRENT:
 		if (val->intval < SM5703_FAST_CURRENT_MIN_UA ||
