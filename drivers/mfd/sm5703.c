@@ -13,9 +13,6 @@
 #include <linux/mfd/core.h>
 #include <linux/mfd/sm5703.h>
 #include <linux/module.h>
-#include <linux/pm_wakeirq.h>
-#include <linux/pm_wakeup.h>
-#include <linux/property.h>
 #include <linux/regmap.h>
 
 #define SM5703_REGMAP_IRQ(_offset, _bit) \
@@ -258,18 +255,6 @@ static int sm5703_probe(struct i2c_client *client)
 				       &sm5703_irq_chip, &sm5703->irq_data);
 	if (ret)
 		return dev_err_probe(dev, ret, "failed to add IRQ chip\n");
-
-	if (device_property_read_bool(dev, "wakeup-source")) {
-		ret = devm_device_init_wakeup(dev);
-		if (ret)
-			return dev_err_probe(dev, ret,
-					     "failed to enable wakeup\n");
-
-		ret = devm_pm_set_wake_irq(dev, client->irq);
-		if (ret)
-			return dev_err_probe(dev, ret,
-					     "failed to configure wake IRQ\n");
-	}
 
 	/* The I2C parent and its MFD children do not perform DMA. */
 	dev->coherent_dma_mask = 0;
