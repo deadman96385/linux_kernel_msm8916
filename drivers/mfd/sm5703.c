@@ -140,15 +140,33 @@ EXPORT_SYMBOL_GPL(sm5703_set_charging);
 
 int sm5703_set_otg(struct sm5703 *sm5703, bool enable)
 {
+	unsigned int status;
 	bool old_enabled;
 	int ret;
 
 	mutex_lock(&sm5703->mode_lock);
+	if (enable && !sm5703->otg_enabled) {
+		ret = regmap_read(sm5703->regmap, SM5703_REG_STATUS5,
+				  &status);
+		if (ret)
+			goto out_unlock;
+
+		if (status & (SM5703_STATUS5_VBUSOK |
+			      SM5703_STATUS5_VBUSOVP)) {
+			dev_warn_ratelimited(sm5703->dev,
+					     "refusing OTG while external VBUS is present\n");
+			ret = -EBUSY;
+			goto out_unlock;
+		}
+	}
+
 	old_enabled = sm5703->otg_enabled;
 	sm5703->otg_enabled = enable;
 	ret = sm5703_update_mode_locked(sm5703);
 	if (ret)
 		sm5703->otg_enabled = old_enabled;
+
+out_unlock:
 	mutex_unlock(&sm5703->mode_lock);
 
 	return ret;
