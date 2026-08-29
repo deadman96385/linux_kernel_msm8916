@@ -343,6 +343,17 @@ config BACKLIGHT_RT4831
 	  It's commonly used to drive the display WLED. There're four channels
 	  inisde, and each channel can provide up to 30mA current.
 
+config BACKLIGHT_RT8555
+	tristate "Richtek RT8555 Backlight Driver"
+	depends on I2C
+	select REGMAP_I2C
+	help
+	  Say Y here to enable support for the Richtek RT8555 6-channel
+	  white LED backlight driver.
+
+	  To compile this driver as a module, choose M here. The module will
+	  be called rt8555-backlight.
+
 config BACKLIGHT_SAHARA
 	tristate "Tabletkiosk Sahara Touch-iT Backlight Driver"
 	depends on X86
