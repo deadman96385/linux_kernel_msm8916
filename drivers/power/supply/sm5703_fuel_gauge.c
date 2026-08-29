@@ -7,8 +7,6 @@
 #include <linux/limits.h>
 #include <linux/module.h>
 #include <linux/mutex.h>
-#include <linux/pm_wakeirq.h>
-#include <linux/pm_wakeup.h>
 #include <linux/power_supply.h>
 #include <linux/property.h>
 #include <linux/regmap.h>
@@ -948,17 +946,6 @@ static int sm5703_fg_probe(struct i2c_client *client)
 			return dev_err_probe(dev, ret,
 					     "failed to request interrupt\n");
 
-		if (device_property_read_bool(dev, "wakeup-source")) {
-			ret = devm_device_init_wakeup(dev);
-			if (ret)
-				return dev_err_probe(dev, ret,
-						     "failed to enable wakeup\n");
-
-			ret = devm_pm_set_wake_irq(dev, client->irq);
-			if (ret)
-				return dev_err_probe(dev, ret,
-						     "failed to configure wake IRQ\n");
-		}
 	}
 
 	return 0;
