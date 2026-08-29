@@ -866,6 +866,8 @@ static int sm5703_parse_irq(struct sm5502_muic_info *info, int irq_type)
 	switch (irq_type) {
 	case SM5703_IRQ_INT1_ATTACH:
 	case SM5703_IRQ_INT1_DETACH:
+	case SM5703_IRQ_INT1_OVP_ENABLE:
+	case SM5703_IRQ_INT1_OVP_DISABLE:
 	case SM5703_IRQ_INT2_VBUS_OFF:
 	case SM5703_IRQ_INT2_RESERVED_ATTACH:
 	case SM5703_IRQ_INT2_ADC_CHANGE:
@@ -874,8 +876,6 @@ static int sm5703_parse_irq(struct sm5502_muic_info *info, int irq_type)
 	case SM5703_IRQ_INT2_VBUSDET_ON:
 		info->irq_pending = true;
 		break;
-	case SM5703_IRQ_INT1_OVP_ENABLE:
-	case SM5703_IRQ_INT1_OVP_DISABLE:
 	case SM5703_IRQ_INT2_STUCK_KEY:
 	case SM5703_IRQ_INT2_STUCK_KEY_RCV:
 	default:
