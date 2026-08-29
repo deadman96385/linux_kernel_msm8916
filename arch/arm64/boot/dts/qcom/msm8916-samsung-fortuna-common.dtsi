@@ -177,6 +177,7 @@
 		compatible = "siliconmitus,sm5504-muic";
 		reg = <0x14>;
 		interrupts-extended = <&tlmm 12 IRQ_TYPE_EDGE_FALLING>;
+		wakeup-source;
 		pinctrl-0 = <&muic_int_default>;
 		pinctrl-names = "default";
 		status = "disabled";
@@ -192,6 +193,7 @@
 		compatible = "siliconmitus,sm5502-muic";
 		reg = <0x25>;
 		interrupts-extended = <&tlmm 12 IRQ_TYPE_EDGE_FALLING>;
+		wakeup-source;
 		pinctrl-0 = <&muic_int_default>;
 		pinctrl-names = "default";
 		status = "disabled";

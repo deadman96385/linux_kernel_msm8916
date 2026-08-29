@@ -104,6 +104,7 @@
 
 			interrupt-parent = <&tlmm>;
 			interrupts = <12 IRQ_TYPE_EDGE_FALLING>;
+			wakeup-source;
 
 			pinctrl-names = "default";
 			pinctrl-0 = <&muic_int_default>;
