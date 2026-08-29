@@ -250,8 +250,13 @@ int sx_common_read_event_config(struct iio_dev *indio_dev,
 				enum iio_event_direction dir)
 {
 	struct sx_common_data *data = iio_priv(indio_dev);
+	int enabled;
 
-	return !!(data->chan_event & BIT(chan->channel));
+	mutex_lock(&data->mutex);
+	enabled = !!(data->chan_event & BIT(chan->channel));
+	mutex_unlock(&data->mutex);
+
+	return enabled;
 }
 EXPORT_SYMBOL_NS_GPL(sx_common_read_event_config, "SEMTECH_PROX");
 
@@ -274,11 +279,14 @@ int sx_common_write_event_config(struct iio_dev *indio_dev,
 	unsigned int eventirq = SX_COMMON_FAR_IRQ | SX_COMMON_CLOSE_IRQ;
 	int ret;
 
-	/* If the state hasn't changed, there's nothing to do. */
-	if (!!(data->chan_event & BIT(chan->channel)) == state)
-		return 0;
-
 	mutex_lock(&data->mutex);
+
+	/* If the state hasn't changed, there's nothing to do. */
+	if (!!(data->chan_event & BIT(chan->channel)) == state) {
+		ret = 0;
+		goto out_unlock;
+	}
+
 	if (state) {
 		ret = sx_common_get_event_channel(data, chan->channel);
 		if (ret)

@@ -941,22 +941,41 @@ static int sx9310_suspend(struct device *dev)
 {
 	struct sx_common_data *data = iio_priv(dev_get_drvdata(dev));
 	u8 ctrl0;
-	int ret;
+	int ret, restore_ret;
 
-	disable_irq_nosync(data->client->irq);
+	if (data->client->irq && device_may_wakeup(dev) &&
+	    READ_ONCE(data->chan_event))
+		return enable_irq_wake(data->client->irq);
 
-	guard(mutex)(&data->mutex);
+	if (data->client->irq)
+		disable_irq(data->client->irq);
+
+	mutex_lock(&data->mutex);
 	ret = regmap_read(data->regmap, SX9310_REG_PROX_CTRL0,
 			  &data->suspend_ctrl);
 	if (ret)
-		return ret;
+		goto out_unlock;
 
 	ctrl0 = data->suspend_ctrl & ~SX9310_REG_PROX_CTRL0_SENSOREN_MASK;
 	ret = regmap_write(data->regmap, SX9310_REG_PROX_CTRL0, ctrl0);
 	if (ret)
-		return ret;
+		goto out_unlock;
 
-	return regmap_write(data->regmap, SX9310_REG_PAUSE, 0);
+	ret = regmap_write(data->regmap, SX9310_REG_PAUSE, 0);
+	if (ret) {
+		restore_ret = regmap_write(data->regmap, SX9310_REG_PROX_CTRL0,
+					   data->suspend_ctrl);
+		if (restore_ret)
+			dev_warn(dev, "failed to restore control register: %d\n",
+				 restore_ret);
+	}
+
+out_unlock:
+	mutex_unlock(&data->mutex);
+	if (ret && data->client->irq)
+		enable_irq(data->client->irq);
+
+	return ret;
 }
 
 static int sx9310_resume(struct device *dev)
@@ -964,19 +983,21 @@ static int sx9310_resume(struct device *dev)
 	struct sx_common_data *data = iio_priv(dev_get_drvdata(dev));
 	int ret;
 
-	scoped_guard(mutex, &data->mutex) {
-		ret = regmap_write(data->regmap, SX9310_REG_PAUSE, 1);
-		if (ret)
-			return ret;
+	if (data->client->irq && device_may_wakeup(dev) &&
+	    READ_ONCE(data->chan_event))
+		return disable_irq_wake(data->client->irq);
 
+	mutex_lock(&data->mutex);
+	ret = regmap_write(data->regmap, SX9310_REG_PAUSE, 1);
+	if (!ret)
 		ret = regmap_write(data->regmap, SX9310_REG_PROX_CTRL0,
 				   data->suspend_ctrl);
-		if (ret)
-			return ret;
-	}
+	mutex_unlock(&data->mutex);
 
-	enable_irq(data->client->irq);
-	return 0;
+	if (data->client->irq)
+		enable_irq(data->client->irq);
+
+	return ret;
 }
 
 static DEFINE_SIMPLE_DEV_PM_OPS(sx9310_pm_ops, sx9310_suspend, sx9310_resume);
