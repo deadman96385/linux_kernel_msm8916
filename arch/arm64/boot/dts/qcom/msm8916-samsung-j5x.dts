@@ -4,6 +4,8 @@
 
 #include "msm8916-samsung-j5-common.dtsi"
 
+#include <dt-bindings/pinctrl/qcom,pmic-gpio.h>
+
 / {
 	model = "Samsung Galaxy J5 (2016)";
 	compatible = "samsung,j5x", "qcom,msm8916";
@@ -110,6 +112,20 @@
 		pinctrl-0 = <&tsp_ldo_en_default>;
 		pinctrl-names = "default";
 	};
+
+	reg_nfc_pvdd: regulator-nfc-pvdd {
+		compatible = "regulator-fixed";
+		regulator-name = "nfc_pvdd";
+		regulator-min-microvolt = <1800000>;
+		regulator-max-microvolt = <1800000>;
+		vin-supply = <&pm8916_l14>;
+
+		gpio = <&tlmm 89 GPIO_ACTIVE_HIGH>;
+		enable-active-high;
+
+		pinctrl-0 = <&nfc_pvdd_default>;
+		pinctrl-names = "default";
+	};
 };
 
 &accelerometer {
@@ -121,6 +137,28 @@
 	mount-matrix = "0", "-1", "0",
 		       "1", "0", "0",
 		       "0", "0", "-1";
+};
+
+&blsp_i2c1 {
+	status = "okay";
+
+	nfc@2b {
+		compatible = "nxp,pn547", "nxp,nxp-nci-i2c";
+		reg = <0x2b>;
+
+		interrupt-parent = <&tlmm>;
+		interrupts = <50 IRQ_TYPE_EDGE_RISING>;
+
+		enable-gpios = <&tlmm 94 GPIO_ACTIVE_HIGH>;
+		firmware-gpios = <&tlmm 116 GPIO_ACTIVE_HIGH>;
+		pvdd-supply = <&reg_nfc_pvdd>;
+
+		clocks = <&rpmcc RPM_SMD_BB_CLK2_PIN>;
+		clock-names = "ref";
+
+		pinctrl-0 = <&nfc_default &nfc_clk_req>;
+		pinctrl-names = "default";
+	};
 };
 
 &blsp_i2c4 {
@@ -178,6 +216,24 @@
 	compatible = "samsung,s6e8aa5x01-ams520kt01";
 	vdd3-supply = <&reg_vdd_lcd_1p8>;
 	vci-supply = <&reg_vdd_lcd_3p0>;
+};
+
+&pm8916_gpios {
+	nfc_clk_req: nfc-clk-req-state {
+		pins = "gpio2";
+		function = "func1";
+
+		input-enable;
+		bias-disable;
+		power-source = <PM8916_GPIO_L2>;
+	};
+};
+
+&pm8916_rpm_regulators {
+	pm8916_l14: l14 {
+		regulator-min-microvolt = <1800000>;
+		regulator-max-microvolt = <1800000>;
+	};
 };
 
 &reg_vdd_lcd_1p8 {
@@ -241,6 +297,22 @@
 
 		drive-strength = <2>;
 		bias-disable;
+	};
+
+	nfc_default: nfc-default-state {
+		pins = "gpio50", "gpio94", "gpio116";
+		function = "gpio";
+
+		drive-strength = <2>;
+		bias-pull-down;
+	};
+
+	nfc_pvdd_default: nfc-pvdd-default-state {
+		pins = "gpio89";
+		function = "gpio";
+
+		drive-strength = <2>;
+		bias-pull-down;
 	};
 
 	proximity_int_default: proximity-int-default-state {
