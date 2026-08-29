@@ -27,8 +27,17 @@ properties:
   firmware-gpios:
     description: Output GPIO pin used to enter firmware download mode
 
+  clocks:
+    maxItems: 1
+
+  clock-names:
+    const: ref
+
   interrupts:
     maxItems: 1
+
+  pvdd-supply:
+    description: Pad and host-interface power supply
 
   reg:
     maxItems: 1
@@ -60,5 +69,8 @@ examples:
 
             enable-gpios = <&gpio0 30 GPIO_ACTIVE_HIGH>;
             firmware-gpios = <&gpio0 31 GPIO_ACTIVE_HIGH>;
+            clocks = <&nfc_ref_clk>;
+            clock-names = "ref";
+            pvdd-supply = <&nfc_pvdd>;
         };
     };
