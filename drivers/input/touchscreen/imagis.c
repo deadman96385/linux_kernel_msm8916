@@ -50,6 +50,7 @@
 #define IST3038C_FINGER_COUNT_MASK	GENMASK(15, 12)
 #define IST3038C_FINGER_STATUS_MASK	GENMASK(9, 0)
 #define IST3032C_KEY_STATUS_MASK	GENMASK(20, 16)
+#define IST3032C_KEY_COUNT_MASK		GENMASK(23, 21)
 #define IST3038C_INTR_STATUS_MASK	GENMASK(11, 10)
 #define IST3038C_INTR_CHECKSUM_MASK	GENMASK(31, 24)
 #define IST3038C_CMD_SET_SPECIAL_MODE	0x22
@@ -79,6 +80,7 @@ struct imagis_ts {
 	int num_keycodes;
 	unsigned int error_count;
 	bool powered;
+	bool running;
 };
 
 static void imagis_request_reset(struct imagis_ts *ts)
@@ -253,6 +255,12 @@ static int imagis_read_frame(struct imagis_ts *ts, u32 intr_message,
 	    expected_checksum)
 		return -EBADMSG;
 
+	for (i = 0; i < finger_count; i++) {
+		if (FIELD_GET(IST3038C_X_MASK, coords[i]) > ts->prop.max_x ||
+		    FIELD_GET(IST3038C_Y_MASK, coords[i]) > ts->prop.max_y)
+			return -ERANGE;
+	}
+
 	return 0;
 }
 
@@ -261,7 +269,7 @@ static irqreturn_t imagis_interrupt(int irq, void *dev_id)
 	struct imagis_ts *ts = dev_id;
 	u32 coords[IST3038C_MAX_FINGER_NUM];
 	u32 intr_message, finger_status;
-	unsigned int finger_count, finger_pressed, key_pressed;
+	unsigned int finger_count, finger_pressed, key_count, key_pressed;
 	unsigned int coord_index = 0;
 	int i;
 	int error;
@@ -287,6 +295,16 @@ static irqreturn_t imagis_interrupt(int irq, void *dev_id)
 	if (ts->tdata->protocol_b && hweight32(finger_pressed) != finger_count) {
 		dev_warn_ratelimited(&ts->client->dev,
 				     "finger count and status bitmap disagree\n");
+		imagis_request_reset(ts);
+		goto out;
+	}
+	key_count = FIELD_GET(IST3032C_KEY_COUNT_MASK, intr_message);
+	key_pressed = FIELD_GET(IST3032C_KEY_STATUS_MASK, intr_message);
+	if (ts->tdata->protocol_b &&
+	    (key_count > ARRAY_SIZE(ts->keycodes) ||
+	     hweight32(key_pressed) != key_count)) {
+		dev_warn_ratelimited(&ts->client->dev,
+				     "key count and status bitmap disagree\n");
 		imagis_request_reset(ts);
 		goto out;
 	}
@@ -349,8 +367,6 @@ static irqreturn_t imagis_interrupt(int irq, void *dev_id)
 		}
 	}
 
-	key_pressed = FIELD_GET(IST3032C_KEY_STATUS_MASK, intr_message);
-
 	for (int i = 0; i < ts->num_keycodes; i++)
 		input_report_key(ts->input_dev, ts->keycodes[i],
 				 key_pressed & BIT(i));
@@ -395,6 +411,9 @@ static int imagis_start(struct imagis_ts *ts)
 {
 	int error;
 
+	if (ts->running)
+		return 0;
+
 	error = imagis_power_on(ts);
 	if (error)
 		return error;
@@ -407,6 +426,7 @@ static int imagis_start(struct imagis_ts *ts)
 	}
 
 	enable_irq(ts->client->irq);
+	ts->running = true;
 
 	return 0;
 }
@@ -415,7 +435,13 @@ static int imagis_stop(struct imagis_ts *ts)
 {
 	int i;
 
+	if (!ts->running) {
+		imagis_power_off(ts);
+		return 0;
+	}
+
 	disable_irq(ts->client->irq);
+	ts->running = false;
 
 	for (i = 0; i < IST3038C_MAX_FINGER_NUM; i++) {
 		input_mt_slot(ts->input_dev, i);
@@ -471,6 +497,7 @@ static void imagis_input_close(struct input_dev *dev)
 
 static int imagis_init_input_dev(struct imagis_ts *ts)
 {
+	struct device_node *np = ts->client->dev.of_node;
 	struct input_dev *input_dev;
 	int error;
 
@@ -492,9 +519,10 @@ static int imagis_init_input_dev(struct imagis_ts *ts)
 	input_set_capability(input_dev, EV_ABS, ABS_MT_POSITION_Y);
 	input_set_abs_params(input_dev, ABS_MT_TOUCH_MAJOR, 0, 16, 0, 0);
 	if (ts->tdata->touch_keys_supported) {
-		ts->num_keycodes = of_property_read_variable_u32_array(
-				ts->client->dev.of_node, "linux,keycodes",
-				ts->keycodes, 0, ARRAY_SIZE(ts->keycodes));
+		ts->num_keycodes =
+			of_property_read_variable_u32_array(np, "linux,keycodes",
+							    ts->keycodes, 0,
+							    ARRAY_SIZE(ts->keycodes));
 		if (ts->num_keycodes <= 0) {
 			ts->keycodes[0] = KEY_APPSELECT;
 			ts->keycodes[1] = KEY_BACK;
