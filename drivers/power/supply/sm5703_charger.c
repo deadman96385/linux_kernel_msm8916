@@ -78,6 +78,7 @@ struct sm5703_charger {
 	int monitor_interval_ms;
 	int aicl_irq;
 	bool aicl_irq_disabled;
+	bool stopping;
 };
 
 static int sm5703_input_current_to_reg(int ua)
@@ -521,7 +522,7 @@ static void sm5703_aicl_work(struct work_struct *work)
 	int ret;
 
 	mutex_lock(&charger->lock);
-	if (!charger->source_online)
+	if (charger->stopping || !charger->source_online)
 		goto out_unlock;
 
 	ret = regmap_read(charger->regmap, SM5703_REG_STATUS1, &status);
@@ -669,8 +670,9 @@ static void sm5703_monitor_work(struct work_struct *work)
 	if (changed)
 		power_supply_changed(charger->psy);
 
-	mod_delayed_work(system_freezable_wq, &charger->monitor_work,
-			 msecs_to_jiffies(charger->monitor_interval_ms));
+	if (!READ_ONCE(charger->stopping))
+		mod_delayed_work(system_freezable_wq, &charger->monitor_work,
+				 msecs_to_jiffies(charger->monitor_interval_ms));
 }
 
 static int sm5703_get_usb_type(struct sm5703_charger *charger,
@@ -713,6 +715,9 @@ static void sm5703_extcon_work(struct work_struct *work)
 	enum power_supply_usb_type type = POWER_SUPPLY_USB_TYPE_UNKNOWN;
 	int ret;
 
+	if (READ_ONCE(charger->stopping))
+		return;
+
 	ret = sm5703_get_usb_type(charger, &type);
 	if (ret) {
 		dev_warn_ratelimited(charger->dev,
@@ -735,7 +740,8 @@ static int sm5703_extcon_notifier(struct notifier_block *nb,
 	struct sm5703_charger *charger =
 		container_of(nb, struct sm5703_charger, extcon_nb);
 
-	schedule_work(&charger->extcon_work);
+	if (!READ_ONCE(charger->stopping))
+		schedule_work(&charger->extcon_work);
 	return NOTIFY_OK;
 }
 
@@ -752,7 +758,7 @@ static irqreturn_t sm5703_aicl_irq(int irq, void *data)
 	struct sm5703_charger *charger = data;
 
 	mutex_lock(&charger->lock);
-	if (!charger->source_online)
+	if (charger->stopping || !charger->source_online)
 		goto out_unlock;
 
 	if (!charger->aicl_irq_disabled) {
@@ -895,6 +901,26 @@ static int sm5703_hw_init(struct sm5703_charger *charger)
 
 	/* Keep a valid rollback target before the first extcon transition. */
 	return sm5703_set_input_current(charger, SM5703_INPUT_CURRENT_MIN_UA);
+}
+
+static void sm5703_charger_stop(void *data)
+{
+	struct sm5703_charger *charger = data;
+	int ret;
+
+	WRITE_ONCE(charger->stopping, true);
+	cancel_work_sync(&charger->extcon_work);
+	cancel_delayed_work_sync(&charger->aicl_work);
+	cancel_delayed_work_sync(&charger->monitor_work);
+
+	mutex_lock(&charger->lock);
+	charger->source_online = false;
+	charger->usb_type = POWER_SUPPLY_USB_TYPE_UNKNOWN;
+	ret = sm5703_set_charging_locked(charger, false);
+	mutex_unlock(&charger->lock);
+	if (ret)
+		dev_warn(charger->dev,
+			 "failed to disable charging during teardown: %d\n", ret);
 }
 
 static int sm5703_get_battery_info(struct sm5703_charger *charger)
@@ -1057,6 +1083,11 @@ static int sm5703_charger_probe(struct platform_device *pdev)
 	if (ret)
 		return dev_err_probe(charger->dev, ret,
 				     "failed to initialize charger\n");
+
+	ret = devm_add_action_or_reset(charger->dev, sm5703_charger_stop,
+				       charger);
+	if (ret)
+		return ret;
 
 	ret = sm5703_request_irqs(pdev, charger);
 	if (ret)
