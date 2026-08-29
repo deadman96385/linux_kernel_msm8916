@@ -24,6 +24,7 @@
 #include <linux/i2c.h>
 #include <linux/interrupt.h>
 #include <linux/module.h>
+#include <linux/pm.h>
 #include <linux/pm_runtime.h>
 #include <linux/regulator/consumer.h>
 #include <linux/units.h>
@@ -841,19 +842,15 @@ static ssize_t vcnl4040_write_ps_calibbias(struct vcnl4000_data *data, int val)
 	return i2c_smbus_write_word_data(data->client, VCNL4200_PS_CONF3, regval);
 }
 
-static int vcnl4000_read_raw(struct iio_dev *indio_dev,
-				struct iio_chan_spec const *chan,
-				int *val, int *val2, long mask)
+static int __vcnl4000_read_raw(struct iio_dev *indio_dev,
+			       struct iio_chan_spec const *chan,
+			       int *val, int *val2, long mask)
 {
 	int ret;
 	struct vcnl4000_data *data = iio_priv(indio_dev);
 
 	switch (mask) {
 	case IIO_CHAN_INFO_RAW:
-		ret = vcnl4000_set_pm_runtime_state(data, true);
-		if  (ret < 0)
-			return ret;
-
 		switch (chan->type) {
 		case IIO_LIGHT:
 			ret = data->chip_spec->measure_light(data, val);
@@ -869,7 +866,6 @@ static int vcnl4000_read_raw(struct iio_dev *indio_dev,
 		default:
 			ret = -EINVAL;
 		}
-		vcnl4000_set_pm_runtime_state(data, false);
 		return ret;
 	case IIO_CHAN_INFO_SCALE:
 		if (chan->type != IIO_LIGHT)
@@ -917,9 +913,29 @@ static int vcnl4000_read_raw(struct iio_dev *indio_dev,
 	}
 }
 
-static int vcnl4040_write_raw(struct iio_dev *indio_dev,
-			      struct iio_chan_spec const *chan,
-			      int val, int val2, long mask)
+static int vcnl4000_read_raw(struct iio_dev *indio_dev,
+			     struct iio_chan_spec const *chan,
+			     int *val, int *val2, long mask)
+{
+	struct vcnl4000_data *data = iio_priv(indio_dev);
+	int ret;
+
+	if (mask == IIO_CHAN_INFO_SCALE)
+		return __vcnl4000_read_raw(indio_dev, chan, val, val2, mask);
+
+	ret = vcnl4000_set_pm_runtime_state(data, true);
+	if (ret < 0)
+		return ret;
+
+	ret = __vcnl4000_read_raw(indio_dev, chan, val, val2, mask);
+	vcnl4000_set_pm_runtime_state(data, false);
+
+	return ret;
+}
+
+static int __vcnl4040_write_raw(struct iio_dev *indio_dev,
+				struct iio_chan_spec const *chan,
+				int val, int val2, long mask)
 {
 	struct vcnl4000_data *data = iio_priv(indio_dev);
 
@@ -952,6 +968,23 @@ static int vcnl4040_write_raw(struct iio_dev *indio_dev,
 	default:
 		return -EINVAL;
 	}
+}
+
+static int vcnl4040_write_raw(struct iio_dev *indio_dev,
+			      struct iio_chan_spec const *chan,
+			      int val, int val2, long mask)
+{
+	struct vcnl4000_data *data = iio_priv(indio_dev);
+	int ret;
+
+	ret = vcnl4000_set_pm_runtime_state(data, true);
+	if (ret < 0)
+		return ret;
+
+	ret = __vcnl4040_write_raw(indio_dev, chan, val, val2, mask);
+	vcnl4000_set_pm_runtime_state(data, false);
+
+	return ret;
 }
 
 static int vcnl4040_read_avail(struct iio_dev *indio_dev,
@@ -1167,12 +1200,12 @@ static int vcnl4010_write_event(struct iio_dev *indio_dev,
 	}
 }
 
-static int vcnl4040_read_event(struct iio_dev *indio_dev,
-			       const struct iio_chan_spec *chan,
-			       enum iio_event_type type,
-			       enum iio_event_direction dir,
-			       enum iio_event_info info,
-			       int *val, int *val2)
+static int __vcnl4040_read_event(struct iio_dev *indio_dev,
+				 const struct iio_chan_spec *chan,
+				 enum iio_event_type type,
+				 enum iio_event_direction dir,
+				 enum iio_event_info info,
+				 int *val, int *val2)
 {
 	int ret;
 	struct vcnl4000_data *data = iio_priv(indio_dev);
@@ -1231,12 +1264,33 @@ static int vcnl4040_read_event(struct iio_dev *indio_dev,
 	return IIO_VAL_INT;
 }
 
-static int vcnl4040_write_event(struct iio_dev *indio_dev,
-				const struct iio_chan_spec *chan,
-				enum iio_event_type type,
-				enum iio_event_direction dir,
-				enum iio_event_info info,
-				int val, int val2)
+static int vcnl4040_read_event(struct iio_dev *indio_dev,
+			       const struct iio_chan_spec *chan,
+			       enum iio_event_type type,
+			       enum iio_event_direction dir,
+			       enum iio_event_info info,
+			       int *val, int *val2)
+{
+	struct vcnl4000_data *data = iio_priv(indio_dev);
+	int ret;
+
+	ret = vcnl4000_set_pm_runtime_state(data, true);
+	if (ret < 0)
+		return ret;
+
+	ret = __vcnl4040_read_event(indio_dev, chan, type, dir, info,
+				    val, val2);
+	vcnl4000_set_pm_runtime_state(data, false);
+
+	return ret;
+}
+
+static int __vcnl4040_write_event(struct iio_dev *indio_dev,
+				  const struct iio_chan_spec *chan,
+				  enum iio_event_type type,
+				  enum iio_event_direction dir,
+				  enum iio_event_info info,
+				  int val, int val2)
 {
 	int ret;
 	struct vcnl4000_data *data = iio_priv(indio_dev);
@@ -1296,6 +1350,27 @@ static int vcnl4040_write_event(struct iio_dev *indio_dev,
 	if (ret < 0)
 		return ret;
 	return IIO_VAL_INT;
+}
+
+static int vcnl4040_write_event(struct iio_dev *indio_dev,
+				const struct iio_chan_spec *chan,
+				enum iio_event_type type,
+				enum iio_event_direction dir,
+				enum iio_event_info info,
+				int val, int val2)
+{
+	struct vcnl4000_data *data = iio_priv(indio_dev);
+	int ret;
+
+	ret = vcnl4000_set_pm_runtime_state(data, true);
+	if (ret < 0)
+		return ret;
+
+	ret = __vcnl4040_write_event(indio_dev, chan, type, dir, info,
+				     val, val2);
+	vcnl4000_set_pm_runtime_state(data, false);
+
+	return ret;
 }
 
 static bool vcnl4010_is_thr_enabled(struct vcnl4000_data *data)
@@ -1390,31 +1465,40 @@ static int vcnl4040_read_event_config(struct iio_dev *indio_dev,
 				      enum iio_event_type type,
 				      enum iio_event_direction dir)
 {
-	int ret;
 	struct vcnl4000_data *data = iio_priv(indio_dev);
+	int ret;
+
+	ret = vcnl4000_set_pm_runtime_state(data, true);
+	if (ret < 0)
+		return ret;
+
+	mutex_lock(&data->vcnl4000_lock);
 
 	switch (chan->type) {
 	case IIO_LIGHT:
 		ret = i2c_smbus_read_word_data(data->client, VCNL4200_AL_CONF);
 		if (ret < 0)
-			return ret;
+			break;
 
-		data->als_int = FIELD_GET(VCNL4040_ALS_CONF_INT_EN, ret);
-
-		return data->als_int;
+		ret = FIELD_GET(VCNL4040_ALS_CONF_INT_EN, ret);
+		break;
 	case IIO_PROXIMITY:
 		ret = i2c_smbus_read_word_data(data->client, VCNL4200_PS_CONF1);
 		if (ret < 0)
-			return ret;
+			break;
 
-		data->ps_int = FIELD_GET(VCNL4040_PS_CONF2_PS_INT, ret);
-
-		return (dir == IIO_EV_DIR_RISING) ?
-			FIELD_GET(VCNL4040_PS_IF_AWAY, ret) :
-			FIELD_GET(VCNL4040_PS_IF_CLOSE, ret);
+		ret = (dir == IIO_EV_DIR_RISING) ?
+			FIELD_GET(VCNL4040_PS_IF_CLOSE, ret) :
+			FIELD_GET(VCNL4040_PS_IF_AWAY, ret);
+		break;
 	default:
-		return -EINVAL;
+		ret = -EINVAL;
 	}
+
+	mutex_unlock(&data->vcnl4000_lock);
+	vcnl4000_set_pm_runtime_state(data, false);
+
+	return ret;
 }
 
 static int vcnl4040_write_event_config(struct iio_dev *indio_dev,
@@ -1423,17 +1507,26 @@ static int vcnl4040_write_event_config(struct iio_dev *indio_dev,
 				       enum iio_event_direction dir,
 				       bool state)
 {
+	struct vcnl4000_data *data = iio_priv(indio_dev);
+	struct device *dev = &data->client->dev;
+	bool events_were_enabled;
+	bool events_are_enabled;
 	int ret;
 	u16 val, mask;
-	struct vcnl4000_data *data = iio_priv(indio_dev);
 
-	guard(mutex)(&data->vcnl4000_lock);
+	ret = pm_runtime_resume_and_get(dev);
+	if (ret < 0)
+		return ret;
+
+	mutex_lock(&data->vcnl4000_lock);
+	events_were_enabled = data->als_int || data->ps_int;
+	events_are_enabled = events_were_enabled;
 
 	switch (chan->type) {
 	case IIO_LIGHT:
 		ret = i2c_smbus_read_word_data(data->client, VCNL4200_AL_CONF);
 		if (ret < 0)
-			return ret;
+			goto out;
 
 		mask = VCNL4040_ALS_CONF_INT_EN;
 		if (state)
@@ -1441,25 +1534,51 @@ static int vcnl4040_write_event_config(struct iio_dev *indio_dev,
 		else
 			val = (ret & ~mask);
 
-		data->als_int = FIELD_GET(VCNL4040_ALS_CONF_INT_EN, val);
-		return i2c_smbus_write_word_data(data->client, VCNL4200_AL_CONF, val);
+		ret = i2c_smbus_write_word_data(data->client, VCNL4200_AL_CONF,
+						val);
+		if (!ret)
+			data->als_int = FIELD_GET(VCNL4040_ALS_CONF_INT_EN, val);
+		break;
 	case IIO_PROXIMITY:
 		ret = i2c_smbus_read_word_data(data->client, VCNL4200_PS_CONF1);
 		if (ret < 0)
-			return ret;
+			goto out;
 
 		if (dir == IIO_EV_DIR_RISING)
-			mask = VCNL4040_PS_IF_AWAY;
-		else
 			mask = VCNL4040_PS_IF_CLOSE;
+		else
+			mask = VCNL4040_PS_IF_AWAY;
 
 		val = state ? (ret | mask) : (ret & ~mask);
 
-		data->ps_int = FIELD_GET(VCNL4040_PS_CONF2_PS_INT, val);
-		return i2c_smbus_write_word_data(data->client, VCNL4200_PS_CONF1, val);
+		ret = i2c_smbus_write_word_data(data->client, VCNL4200_PS_CONF1,
+						val);
+		if (!ret)
+			data->ps_int = FIELD_GET(VCNL4040_PS_CONF2_PS_INT, val);
+		break;
 	default:
-		return -EINVAL;
+		ret = -EINVAL;
+		break;
 	}
+
+	if (!ret)
+		events_are_enabled = data->als_int || data->ps_int;
+
+out:
+	mutex_unlock(&data->vcnl4000_lock);
+	pm_runtime_mark_last_busy(dev);
+
+	/*
+	 * Keep one runtime PM reference while any threshold event is enabled.
+	 * The temporary reference acquired above becomes that reference on the
+	 * first enable. Drop both references when the final event is disabled.
+	 */
+	if (ret || events_were_enabled || !events_are_enabled)
+		pm_runtime_put_autosuspend(dev);
+	if (!ret && events_were_enabled && !events_are_enabled)
+		pm_runtime_put_autosuspend(dev);
+
+	return ret;
 }
 
 static irqreturn_t vcnl4040_irq_thread(int irq, void *p)
@@ -2036,8 +2155,35 @@ static int vcnl4000_runtime_resume(struct device *dev)
 	return data->chip_spec->set_power_state(data, true);
 }
 
-static DEFINE_RUNTIME_DEV_PM_OPS(vcnl4000_pm_ops, vcnl4000_runtime_suspend,
-				 vcnl4000_runtime_resume, NULL);
+static int vcnl4000_suspend(struct device *dev)
+{
+	struct iio_dev *indio_dev = i2c_get_clientdata(to_i2c_client(dev));
+	struct vcnl4000_data *data = iio_priv(indio_dev);
+
+	/* Keep active threshold events available as system wake sources. */
+	if (device_may_wakeup(dev) &&
+	    (READ_ONCE(data->ps_int) || READ_ONCE(data->als_int)))
+		return 0;
+
+	return pm_runtime_force_suspend(dev);
+}
+
+static int vcnl4000_resume(struct device *dev)
+{
+	struct iio_dev *indio_dev = i2c_get_clientdata(to_i2c_client(dev));
+	struct vcnl4000_data *data = iio_priv(indio_dev);
+
+	if (device_may_wakeup(dev) &&
+	    (READ_ONCE(data->ps_int) || READ_ONCE(data->als_int)))
+		return 0;
+
+	return pm_runtime_force_resume(dev);
+}
+
+static const struct dev_pm_ops vcnl4000_pm_ops = {
+	SYSTEM_SLEEP_PM_OPS(vcnl4000_suspend, vcnl4000_resume)
+	RUNTIME_PM_OPS(vcnl4000_runtime_suspend, vcnl4000_runtime_resume, NULL)
+};
 
 static const struct i2c_device_id vcnl4000_id[] = {
 	{ .name = "cm36672p", .driver_data = (kernel_ulong_t)&cm36672p_spec },
