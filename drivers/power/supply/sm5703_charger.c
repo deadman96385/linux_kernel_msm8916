@@ -669,7 +669,7 @@ static void sm5703_monitor_work(struct work_struct *work)
 	if (changed)
 		power_supply_changed(charger->psy);
 
-	mod_delayed_work(system_wq, &charger->monitor_work,
+	mod_delayed_work(system_freezable_wq, &charger->monitor_work,
 			 msecs_to_jiffies(charger->monitor_interval_ms));
 }
 
@@ -1075,7 +1075,7 @@ static int sm5703_charger_probe(struct platform_device *pdev)
 				     "failed to register extcon notifier\n");
 
 	/* Handle a cable that was already attached before this driver probed. */
-	mod_delayed_work(system_wq, &charger->monitor_work, 0);
+	mod_delayed_work(system_freezable_wq, &charger->monitor_work, 0);
 	schedule_work(&charger->extcon_work);
 
 	return 0;
