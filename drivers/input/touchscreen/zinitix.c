@@ -140,16 +140,30 @@ struct point_coord {
 	__le16	y;
 	u8	width;
 	u8	sub_status;
+};
+
+struct point_coord_mode2 {
+	struct point_coord coord;
 	// currently unused, but needed as padding:
 	u8	minor_width;
 	u8	angle;
 };
 
-struct touch_event {
+struct touch_event_mode1 {
+	__le16	status;
+	__le16	event_flag;
+	struct point_coord point_coord[MAX_SUPPORTED_FINGER_NUM];
+};
+
+struct touch_event_mode2 {
 	__le16	status;
 	u8	finger_mask;
 	u8	time_stamp;
-	struct point_coord point_coord[MAX_SUPPORTED_FINGER_NUM];
+	struct point_coord_mode2 point_coord[MAX_SUPPORTED_FINGER_NUM];
+};
+
+struct zinitix_chip_info {
+	u8 default_touch_mode;
 };
 
 struct bt541_ts_data {
@@ -179,6 +193,18 @@ static int zinitix_read_data(struct i2c_client *client,
 		return ret < 0 ? ret : -EIO;
 
 	ret = i2c_master_recv(client, (u8 *)values, length);
+	if (ret != length)
+		return ret < 0 ? ret : -EIO;
+
+	return 0;
+}
+
+static int zinitix_recv_data(struct i2c_client *client, void *values,
+			     size_t length)
+{
+	int ret;
+
+	ret = i2c_master_recv(client, values, length);
 	if (ret != length)
 		return ret < 0 ? ret : -EIO;
 
@@ -401,7 +427,7 @@ static int zinitix_send_power_on_sequence(struct bt541_ts_data *bt541)
 }
 
 static void zinitix_report_finger(struct bt541_ts_data *bt541, int slot,
-				  const struct point_coord *p)
+				  const struct point_coord *p, bool palm)
 {
 	u16 x, y;
 
@@ -416,7 +442,8 @@ static void zinitix_report_finger(struct bt541_ts_data *bt541, int slot,
 	y = le16_to_cpu(p->y);
 
 	input_mt_slot(bt541->input_dev, slot);
-	if (input_mt_report_slot_state(bt541->input_dev, MT_TOOL_FINGER,
+	if (input_mt_report_slot_state(bt541->input_dev,
+				       palm ? MT_TOOL_PALM : MT_TOOL_FINGER,
 				       !(p->sub_status & SUB_BIT_UP))) {
 		touchscreen_report_pos(bt541->input_dev,
 				       &bt541->prop, x, y, true);
@@ -429,6 +456,43 @@ static void zinitix_report_finger(struct bt541_ts_data *bt541, int slot,
 		dev_dbg(&bt541->client->dev, "finger %d up (%u, %u)\n",
 			slot, x, y);
 	}
+}
+
+static int zinitix_read_mode1_event(struct bt541_ts_data *bt541,
+				    struct touch_event_mode1 *touch_event)
+{
+	struct i2c_client *client = bt541->client;
+	size_t initial_length = offsetof(struct touch_event_mode1,
+					 point_coord[1]);
+	unsigned long event_mask;
+	int error;
+	int i;
+
+	/*
+	 * In mode 1 the controller places the first event at its I2C read
+	 * pointer when it asserts IRQ. The downstream ZT7554 driver reads this
+	 * initial status/event/coordinate block without selecting a register,
+	 * then fetches the remaining changed coordinates individually.
+	 */
+	error = zinitix_recv_data(client, touch_event, initial_length);
+	if (error)
+		return error;
+
+	event_mask = le16_to_cpu(touch_event->event_flag);
+	for_each_set_bit(i, &event_mask, MAX_SUPPORTED_FINGER_NUM) {
+		if (i == 0)
+			continue;
+
+		udelay(20);
+		error = zinitix_read_data(client,
+					  ZINITIX_POINT_STATUS_REG + 2 + i * 4,
+					  &touch_event->point_coord[i],
+					  sizeof(touch_event->point_coord[i]));
+		if (error)
+			return error;
+	}
+
+	return 0;
 }
 
 static void zinitix_report_keys(struct bt541_ts_data *bt541, u16 icon_events)
@@ -444,22 +508,32 @@ static irqreturn_t zinitix_ts_irq_handler(int irq, void *bt541_handler)
 {
 	struct bt541_ts_data *bt541 = bt541_handler;
 	struct i2c_client *client = bt541->client;
-	struct touch_event touch_event;
+	struct touch_event_mode1 touch_event_mode1 = { };
+	struct touch_event_mode2 touch_event_mode2 = { };
+	const struct point_coord *point_coord;
 	unsigned long finger_mask;
 	__le16 icon_events;
+	u16 status;
 	int error;
 	int i;
 
-	memset(&touch_event, 0, sizeof(struct touch_event));
-
-	error = zinitix_read_data(bt541->client, ZINITIX_POINT_STATUS_REG,
-				  &touch_event, sizeof(struct touch_event));
+	if (bt541->zinitix_mode == 1) {
+		error = zinitix_read_mode1_event(bt541, &touch_event_mode1);
+		status = le16_to_cpu(touch_event_mode1.status);
+		finger_mask = le16_to_cpu(touch_event_mode1.event_flag);
+	} else {
+		error = zinitix_read_data(client, ZINITIX_POINT_STATUS_REG,
+					  &touch_event_mode2,
+					  sizeof(touch_event_mode2));
+		status = le16_to_cpu(touch_event_mode2.status);
+		finger_mask = touch_event_mode2.finger_mask;
+	}
 	if (error) {
 		dev_err(&client->dev, "Failed to read in touchpoint struct\n");
 		goto out;
 	}
 
-	if (le16_to_cpu(touch_event.status) & BIT_ICON_EVENT) {
+	if (status & BIT_ICON_EVENT) {
 		error = zinitix_read_data(bt541->client, bt541->icon_status_reg,
 					  &icon_events, sizeof(icon_events));
 		if (error) {
@@ -470,13 +544,23 @@ static irqreturn_t zinitix_ts_irq_handler(int irq, void *bt541_handler)
 		zinitix_report_keys(bt541, le16_to_cpu(icon_events));
 	}
 
-	finger_mask = touch_event.finger_mask;
-	for_each_set_bit(i, &finger_mask, MAX_SUPPORTED_FINGER_NUM) {
-		const struct point_coord *p = &touch_event.point_coord[i];
+	/* Mode 1 also generates interrupts without a coordinate event. */
+	if (bt541->zinitix_mode == 1 && (!status || !finger_mask)) {
+		if (status & BIT_ICON_EVENT)
+			input_sync(bt541->input_dev);
+		goto out;
+	}
 
-		/* Only process contacts that are actually reported */
-		if (p->sub_status & SUB_BIT_EXIST)
-			zinitix_report_finger(bt541, i, p);
+	for_each_set_bit(i, &finger_mask, MAX_SUPPORTED_FINGER_NUM) {
+		if (bt541->zinitix_mode == 1)
+			point_coord = &touch_event_mode1.point_coord[i];
+		else
+			point_coord = &touch_event_mode2.point_coord[i].coord;
+
+		/* Explicit UP events need reporting even without SUB_BIT_EXIST. */
+		if (point_coord->sub_status & (SUB_BIT_EXIST | SUB_BIT_UP))
+			zinitix_report_finger(bt541, i, point_coord,
+					      status & (BIT_PALM | BIT_PALM_REJECT));
 	}
 
 	input_mt_sync_frame(bt541->input_dev);
@@ -585,6 +669,7 @@ static int zinitix_init_input_dev(struct bt541_ts_data *bt541)
 	input_set_capability(input_dev, EV_ABS, ABS_MT_POSITION_Y);
 	input_set_abs_params(input_dev, ABS_MT_WIDTH_MAJOR, 0, 255, 0, 0);
 	input_set_abs_params(input_dev, ABS_MT_TOUCH_MAJOR, 0, 255, 0, 0);
+	input_set_abs_params(input_dev, ABS_MT_TOOL_TYPE, 0, MT_TOOL_PALM, 0, 0);
 
 	touchscreen_parse_properties(input_dev, true, &bt541->prop);
 	if (!bt541->prop.max_x || !bt541->prop.max_y) {
@@ -613,6 +698,7 @@ static int zinitix_init_input_dev(struct bt541_ts_data *bt541)
 
 static int zinitix_ts_probe(struct i2c_client *client)
 {
+	const struct zinitix_chip_info *chip_info;
 	struct bt541_ts_data *bt541;
 	int error;
 
@@ -670,29 +756,26 @@ static int zinitix_ts_probe(struct i2c_client *client)
 		}
 	}
 
+	chip_info = i2c_get_match_data(client);
+	error = device_property_read_u32(&client->dev, "zinitix,mode",
+					 &bt541->zinitix_mode);
+	if (error < 0) {
+		bt541->zinitix_mode = chip_info ? chip_info->default_touch_mode :
+						 DEFAULT_TOUCH_POINT_MODE;
+	}
+
+	if (bt541->zinitix_mode != 1 && bt541->zinitix_mode != 2) {
+		dev_err(&client->dev,
+			"Malformed zinitix,mode property, must be 1 or 2 (supplied: %d)\n",
+			bt541->zinitix_mode);
+		return -EINVAL;
+	}
+
 	error = zinitix_init_input_dev(bt541);
 	if (error) {
 		dev_err(&client->dev,
 			"Failed to initialize input device: %d\n", error);
 		return error;
-	}
-
-	error = device_property_read_u32(&client->dev, "zinitix,mode",
-					 &bt541->zinitix_mode);
-	if (error < 0) {
-		/* fall back to mode 2 */
-		bt541->zinitix_mode = DEFAULT_TOUCH_POINT_MODE;
-	}
-
-	if (bt541->zinitix_mode != 2) {
-		/*
-		 * If there are devices that don't support mode 2, support
-		 * for other modes (0, 1) will be needed.
-		 */
-		dev_err(&client->dev,
-			"Malformed zinitix,mode property, must be 2 (supplied: %d)\n",
-			bt541->zinitix_mode);
-		return -EINVAL;
 	}
 
 	return 0;
@@ -731,6 +814,10 @@ static int zinitix_resume(struct device *dev)
 static DEFINE_SIMPLE_DEV_PM_OPS(zinitix_pm_ops, zinitix_suspend, zinitix_resume);
 
 #ifdef CONFIG_OF
+static const struct zinitix_chip_info zinitix_zt7554_chip_info = {
+	.default_touch_mode = 1,
+};
+
 static const struct of_device_id zinitix_of_match[] = {
 	{ .compatible = "zinitix,bt402" },
 	{ .compatible = "zinitix,bt403" },
@@ -746,6 +833,10 @@ static const struct of_device_id zinitix_of_match[] = {
 	{ .compatible = "zinitix,bt548" },
 	{ .compatible = "zinitix,bt554" },
 	{ .compatible = "zinitix,at100" },
+	{
+		.compatible = "zinitix,zt7554",
+		.data = &zinitix_zt7554_chip_info,
+	},
 	{ }
 };
 MODULE_DEVICE_TABLE(of, zinitix_of_match);
