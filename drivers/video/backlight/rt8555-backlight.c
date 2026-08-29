@@ -14,10 +14,12 @@
 #include <linux/i2c.h>
 #include <linux/kernel.h>
 #include <linux/module.h>
+#include <linux/of.h>
 #include <linux/property.h>
 #include <linux/regmap.h>
 
 #define RT8555_MAX_BRIGHTNESS			1023
+#define RT8555_MAX_8BIT_BRIGHTNESS		255
 #define RT8555_DEFAULT_BRIGHTNESS		511
 
 #define RT8555_MIN_LED_CURRENT_UA		10020
@@ -44,7 +46,11 @@
 #define RT8555_REG_CONFIG8			0x08
 #define RT8555_LED_HEADROOM_MASK		GENMASK(3, 2)
 
-#define RT8555_REG_MAX				0x0e
+#define RT8555_REG_DEVICE_CONFIG0		0x50
+#define RT8555_REG_DEVICE_CONFIG1		0x51
+#define RT8555_NUM_DEVICE_CONFIG_REGS		2
+
+#define RT8555_REG_MAX				0x60
 
 struct rt8555 {
 	struct device *dev;
@@ -53,6 +59,9 @@ struct rt8555 {
 	struct gpio_desc *enable_gpio;
 	u8 led_current;
 	u8 led_headroom;
+	u8 device_config[RT8555_NUM_DEVICE_CONFIG_REGS];
+	bool use_10bit_brightness;
+	bool has_device_config;
 	bool enabled;
 };
 
@@ -61,8 +70,8 @@ static int rt8555_apply_config(struct rt8555 *rt)
 	int ret;
 
 	/*
-	 * Select 10-bit I2C brightness control and DC dimming. The data sheet
-	 * defines DC mode as mixed mode with a zero-percent PWM threshold.
+	 * Select I2C brightness control and DC dimming. The data sheet defines
+	 * DC mode as mixed mode with a zero-percent PWM threshold.
 	 */
 	ret = regmap_update_bits(rt->regmap, RT8555_REG_CONFIG0,
 				 RT8555_FIXED_26KHZ |
@@ -77,7 +86,8 @@ static int rt8555_apply_config(struct rt8555 *rt)
 
 	ret = regmap_update_bits(rt->regmap, RT8555_REG_CONFIG1,
 				 RT8555_10BIT_BRIGHTNESS,
-				 RT8555_10BIT_BRIGHTNESS);
+				 rt->use_10bit_brightness ?
+				 RT8555_10BIT_BRIGHTNESS : 0);
 	if (ret)
 		return ret;
 
@@ -86,10 +96,20 @@ static int rt8555_apply_config(struct rt8555 *rt)
 	if (ret)
 		return ret;
 
-	return regmap_update_bits(rt->regmap, RT8555_REG_CONFIG8,
-				  RT8555_LED_HEADROOM_MASK,
-				  FIELD_PREP(RT8555_LED_HEADROOM_MASK,
-					     rt->led_headroom));
+	ret = regmap_update_bits(rt->regmap, RT8555_REG_CONFIG8,
+				 RT8555_LED_HEADROOM_MASK,
+				 FIELD_PREP(RT8555_LED_HEADROOM_MASK,
+					    rt->led_headroom));
+	if (ret || !rt->has_device_config)
+		return ret;
+
+	ret = regmap_write(rt->regmap, RT8555_REG_DEVICE_CONFIG0,
+			   rt->device_config[0]);
+	if (ret)
+		return ret;
+
+	return regmap_write(rt->regmap, RT8555_REG_DEVICE_CONFIG1,
+			    rt->device_config[1]);
 }
 
 static int rt8555_enable(struct rt8555 *rt)
@@ -132,6 +152,10 @@ static int rt8555_write_brightness(struct rt8555 *rt,
 		(brightness >> 8) & RT8555_BRIGHTNESS_MSB_MASK,
 	};
 
+	if (!rt->use_10bit_brightness)
+		return regmap_write(rt->regmap, RT8555_REG_BRIGHTNESS_LSB,
+				    brightness);
+
 	/* The data sheet requires a series write for 10-bit brightness. */
 	return regmap_raw_write(rt->regmap, RT8555_REG_BRIGHTNESS_LSB,
 				buf, sizeof(buf));
@@ -171,11 +195,18 @@ static int rt8555_update_status(struct backlight_device *backlight)
 static int rt8555_get_brightness(struct backlight_device *backlight)
 {
 	struct rt8555 *rt = bl_get_data(backlight);
+	unsigned int value;
 	u8 buf[2];
 	int ret;
 
 	if (!rt->enabled)
 		return 0;
+
+	if (!rt->use_10bit_brightness) {
+		ret = regmap_read(rt->regmap, RT8555_REG_BRIGHTNESS_LSB,
+				  &value);
+		return ret ? ret : value;
+	}
 
 	ret = regmap_raw_read(rt->regmap, RT8555_REG_BRIGHTNESS_LSB,
 			      buf, sizeof(buf));
@@ -206,6 +237,8 @@ static int rt8555_parse_properties(struct rt8555 *rt,
 {
 	static const u32 headroom_uv[] = { 500000, 570000, 600000, 700000 };
 	u32 value = RT8555_DEFAULT_LED_CURRENT_UA;
+	int count;
+	int ret;
 	unsigned int i;
 
 	device_property_read_u32(rt->dev, "richtek,led-current-microamp",
@@ -235,6 +268,7 @@ static int rt8555_parse_properties(struct rt8555 *rt,
 		return dev_err_probe(rt->dev, -EINVAL,
 				     "invalid maximum brightness %u\n", value);
 	props->max_brightness = value;
+	rt->use_10bit_brightness = value > RT8555_MAX_8BIT_BRIGHTNESS;
 
 	value = min_t(u32, RT8555_DEFAULT_BRIGHTNESS,
 		      props->max_brightness);
@@ -244,6 +278,28 @@ static int rt8555_parse_properties(struct rt8555 *rt,
 				     "default brightness %u exceeds maximum %u\n",
 				     value, props->max_brightness);
 	props->brightness = value;
+
+	if (device_property_present(rt->dev, "richtek,device-config")) {
+		count = device_property_count_u8(rt->dev,
+						 "richtek,device-config");
+		if (count < 0)
+			return dev_err_probe(rt->dev, count,
+					     "failed to count device config values\n");
+
+		if (count != ARRAY_SIZE(rt->device_config))
+			return dev_err_probe(rt->dev, -EINVAL,
+					     "device config must contain %zu values\n",
+					     ARRAY_SIZE(rt->device_config));
+
+		ret = device_property_read_u8_array(rt->dev,
+						    "richtek,device-config",
+						    rt->device_config, count);
+		if (ret)
+			return dev_err_probe(rt->dev, ret,
+					     "failed to read device config\n");
+
+		rt->has_device_config = true;
+	}
 
 	return 0;
 }
@@ -283,6 +339,14 @@ static int rt8555_probe(struct i2c_client *client)
 	ret = rt8555_parse_properties(rt, &props);
 	if (ret)
 		return ret;
+
+	/*
+	 * A phandle means a display driver will enable the backlight after its
+	 * panel is prepared. Keep EN low until then so panel power-up and DSI
+	 * initialization cannot happen behind an already illuminated backlight.
+	 */
+	if (dev->of_node && dev->of_node->phandle)
+		props.power = BACKLIGHT_POWER_OFF;
 
 	rt->backlight = devm_backlight_device_register(dev, dev_name(dev), dev,
 						       rt, &rt8555_backlight_ops,

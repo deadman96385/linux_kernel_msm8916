@@ -33,6 +33,9 @@ properties:
     maxItems: 1
 
   max-brightness:
+    description:
+      Maximum brightness register value. Values up to 255 select the native
+      8-bit mode; larger values select 10-bit mode.
     minimum: 1
     maximum: 1023
     default: 1023
@@ -53,6 +56,16 @@ properties:
     enum: [ 500000, 570000, 600000, 700000 ]
     default: 500000
 
+  richtek,device-config:
+    $ref: /schemas/types.yaml#/definitions/uint8-array
+    description:
+      Board-specific values for the restricted device configuration registers
+      0x50 and 0x51, in that order. These values must come from the hardware
+      vendor's reference configuration and are restored whenever EN is
+      asserted.
+    minItems: 2
+    maxItems: 2
+
 required:
   - compatible
   - reg
@@ -72,9 +85,11 @@ examples:
             reg = <0x31>;
             enable-gpios = <&gpio 69 GPIO_ACTIVE_HIGH>;
 
-            default-brightness = <511>;
+            max-brightness = <255>;
+            default-brightness = <120>;
             richtek,led-current-microamp = <25000>;
             richtek,led-driver-headroom-microvolt = <570000>;
+            richtek,device-config = /bits/ 8 <0x05 0x08>;
         };
     };
 ...
