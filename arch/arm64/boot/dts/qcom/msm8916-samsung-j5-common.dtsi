@@ -29,6 +29,8 @@
 
 	front_flash_led: led-controller {
 		compatible = "kinetic,ktd2692";
+		pinctrl-0 = <&vtcam_flash_en_default>;
+		pinctrl-names = "default";
 
 		led {
 			function = LED_FUNCTION_FLASH;
@@ -37,9 +39,6 @@
 			led-max-microamp = <300000>;
 			flash-max-microamp = <1500000>;
 			flash-max-timeout-us = <1835000>;
-
-			pinctrl-0 = <&vtcam_flash_en_default>;
-			pinctrl-names = "default";
 		};
 	};
 
