@@ -205,6 +205,8 @@ struct vcnl4000_data {
 	struct mutex vcnl4000_lock;
 	struct vcnl4200_channel vcnl4200_al;
 	struct vcnl4200_channel vcnl4200_ps;
+	struct regulator *vled;
+	bool vled_enabled;
 	uint32_t near_level;
 };
 
@@ -2027,6 +2029,37 @@ static int vcnl4010_probe_trigger(struct iio_dev *indio_dev)
 	return devm_iio_trigger_register(&client->dev, trigger);
 }
 
+static int vcnl4000_enable_vled(struct vcnl4000_data *data)
+{
+	int ret;
+
+	ret = regulator_enable(data->vled);
+	if (ret)
+		return ret;
+
+	data->vled_enabled = true;
+	usleep_range(10000, 11000);
+
+	return 0;
+}
+
+static void vcnl4000_disable_vled(void *priv)
+{
+	struct vcnl4000_data *data = priv;
+	int ret;
+
+	if (!data->vled_enabled)
+		return;
+
+	ret = regulator_disable(data->vled);
+	if (ret) {
+		dev_warn(&data->client->dev, "failed to disable VLED: %d\n", ret);
+		return;
+	}
+
+	data->vled_enabled = false;
+}
+
 static void vcnl4000_cleanup(void *data)
 {
 	struct iio_dev *indio_dev = data;
@@ -2034,6 +2067,8 @@ static void vcnl4000_cleanup(void *data)
 	struct device *dev = &chip->client->dev;
 	int ret;
 
+	WRITE_ONCE(chip->ps_int, 0);
+	WRITE_ONCE(chip->als_int, 0);
 	ret = chip->chip_spec->set_power_state(chip, false);
 	if (ret)
 		dev_warn(dev, "Failed to power down (%pe)", ERR_PTR(ret));
@@ -2041,7 +2076,7 @@ static void vcnl4000_cleanup(void *data)
 
 static int vcnl4000_probe(struct i2c_client *client)
 {
-	const char * const regulator_names[] = { "vdd", "vio", "vled" };
+	const char * const regulator_names[] = { "vdd", "vio" };
 	struct device *dev = &client->dev;
 	struct vcnl4000_data *data;
 	struct iio_dev *indio_dev;
@@ -2058,6 +2093,19 @@ static int vcnl4000_probe(struct i2c_client *client)
 
 	ret = devm_regulator_bulk_get_enable(dev, ARRAY_SIZE(regulator_names),
 					     regulator_names);
+	if (ret)
+		return ret;
+
+	data->vled = devm_regulator_get(dev, "vled");
+	if (IS_ERR(data->vled))
+		return dev_err_probe(dev, PTR_ERR(data->vled),
+				     "failed to get VLED regulator\n");
+
+	ret = vcnl4000_enable_vled(data);
+	if (ret)
+		return dev_err_probe(dev, ret, "failed to enable VLED regulator\n");
+
+	ret = devm_add_action_or_reset(dev, vcnl4000_disable_vled, data);
 	if (ret)
 		return ret;
 
@@ -2122,6 +2170,9 @@ static int vcnl4000_probe(struct i2c_client *client)
 
 	pm_runtime_set_autosuspend_delay(dev, VCNL4000_SLEEP_DELAY_MS);
 	pm_runtime_use_autosuspend(dev);
+	pm_runtime_get_noresume(dev);
+	pm_runtime_mark_last_busy(dev);
+	pm_runtime_put_autosuspend(dev);
 
 	return 0;
 }
@@ -2143,16 +2194,38 @@ static int vcnl4000_runtime_suspend(struct device *dev)
 {
 	struct iio_dev *indio_dev = i2c_get_clientdata(to_i2c_client(dev));
 	struct vcnl4000_data *data = iio_priv(indio_dev);
+	int ret;
 
-	return data->chip_spec->set_power_state(data, false);
+	ret = data->chip_spec->set_power_state(data, false);
+	if (ret)
+		return ret;
+
+	ret = regulator_disable(data->vled);
+	if (ret) {
+		data->chip_spec->set_power_state(data, true);
+		return ret;
+	}
+
+	data->vled_enabled = false;
+
+	return 0;
 }
 
 static int vcnl4000_runtime_resume(struct device *dev)
 {
 	struct iio_dev *indio_dev = i2c_get_clientdata(to_i2c_client(dev));
 	struct vcnl4000_data *data = iio_priv(indio_dev);
+	int ret;
 
-	return data->chip_spec->set_power_state(data, true);
+	ret = vcnl4000_enable_vled(data);
+	if (ret)
+		return ret;
+
+	ret = data->chip_spec->set_power_state(data, true);
+	if (ret)
+		vcnl4000_disable_vled(data);
+
+	return ret;
 }
 
 static int vcnl4000_suspend(struct device *dev)
