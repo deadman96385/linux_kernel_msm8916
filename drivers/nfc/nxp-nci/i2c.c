@@ -13,13 +13,15 @@
  */
 
 #include <linux/acpi.h>
+#include <linux/clk.h>
 #include <linux/delay.h>
+#include <linux/gpio/consumer.h>
 #include <linux/i2c.h>
 #include <linux/interrupt.h>
 #include <linux/irq.h>
 #include <linux/module.h>
 #include <linux/nfc.h>
-#include <linux/gpio/consumer.h>
+#include <linux/regulator/consumer.h>
 #include <linux/unaligned.h>
 
 #include <net/nfc/nfc.h>
@@ -36,6 +38,10 @@ struct nxp_nci_i2c_phy {
 
 	struct gpio_desc *gpiod_en;
 	struct gpio_desc *gpiod_fw;
+	struct regulator *pvdd;
+	struct clk *clk;
+	bool pvdd_enabled;
+	bool clk_enabled;
 
 	int hard_fault; /*
 			 * < 0 if hardware error occurred (e.g. i2c err)
@@ -43,17 +49,69 @@ struct nxp_nci_i2c_phy {
 			 */
 };
 
+static int nxp_nci_i2c_power_on(struct nxp_nci_i2c_phy *phy)
+{
+	int r;
+
+	if (phy->pvdd && !phy->pvdd_enabled) {
+		r = regulator_enable(phy->pvdd);
+		if (r)
+			return r;
+		phy->pvdd_enabled = true;
+	}
+
+	if (phy->clk && !phy->clk_enabled) {
+		r = clk_prepare_enable(phy->clk);
+		if (r) {
+			if (phy->pvdd_enabled && !regulator_disable(phy->pvdd))
+				phy->pvdd_enabled = false;
+			return r;
+		}
+		phy->clk_enabled = true;
+	}
+
+	return 0;
+}
+
+static int nxp_nci_i2c_power_off(struct nxp_nci_i2c_phy *phy)
+{
+	int r;
+
+	if (phy->pvdd_enabled) {
+		r = regulator_disable(phy->pvdd);
+		if (r)
+			return r;
+		phy->pvdd_enabled = false;
+	}
+
+	if (phy->clk_enabled) {
+		clk_disable_unprepare(phy->clk);
+		phy->clk_enabled = false;
+	}
+
+	return 0;
+}
+
 static int nxp_nci_i2c_set_mode(void *phy_id,
 				    enum nxp_nci_mode mode)
 {
 	struct nxp_nci_i2c_phy *phy = (struct nxp_nci_i2c_phy *) phy_id;
+	int r;
+
+	if (mode != NXP_NCI_MODE_COLD) {
+		r = nxp_nci_i2c_power_on(phy);
+		if (r)
+			return r;
+	}
 
 	gpiod_set_value_cansleep(phy->gpiod_fw, (mode == NXP_NCI_MODE_FW) ? 1 : 0);
 	gpiod_set_value_cansleep(phy->gpiod_en, (mode != NXP_NCI_MODE_COLD) ? 1 : 0);
 	usleep_range(10000, 15000);
 
-	if (mode == NXP_NCI_MODE_COLD)
+	if (mode == NXP_NCI_MODE_COLD) {
 		phy->hard_fault = 0;
+		return nxp_nci_i2c_power_off(phy);
+	}
 
 	return 0;
 }
@@ -307,6 +365,21 @@ static int nxp_nci_i2c_probe(struct i2c_client *client)
 		nfc_err(dev, "Failed to get FW gpio\n");
 		return PTR_ERR(phy->gpiod_fw);
 	}
+
+	phy->pvdd = devm_regulator_get_optional(dev, "pvdd");
+	if (IS_ERR(phy->pvdd)) {
+		r = PTR_ERR(phy->pvdd);
+		if (r != -ENODEV)
+			return dev_err_probe(dev, r,
+					     "Failed to get PVDD regulator\n");
+
+		phy->pvdd = NULL;
+	}
+
+	phy->clk = devm_clk_get_optional(dev, "ref");
+	if (IS_ERR(phy->clk))
+		return dev_err_probe(dev, PTR_ERR(phy->clk),
+				     "Failed to get reference clock\n");
 
 	r = nxp_nci_probe(phy, &client->dev, &i2c_phy_ops,
 			  NXP_NCI_I2C_MAX_PAYLOAD, &phy->ndev);
