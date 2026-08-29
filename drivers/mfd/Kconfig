@@ -1345,6 +1345,18 @@ config MFD_RT5033
 	  sub-devices like charger, fuel gauge, flash LED, current source,
 	  LDO and Buck.
 
+config MFD_SM5703
+	tristate "Silicon Mitus SM5703 PMIC"
+	depends on I2C
+	select MFD_CORE
+	select REGMAP_I2C
+	select REGMAP_IRQ
+	help
+	  Support for the Silicon Mitus SM5703 companion PMIC. The device
+	  contains a battery charger, OTG boost supply, regulators and a flash
+	  LED controller. Its MUIC and fuel gauge use separate I2C addresses
+	  and are handled by their own drivers.
+
 config MFD_RT5120
 	tristate "Richtek RT5120 Power Management IC"
 	depends on I2C
