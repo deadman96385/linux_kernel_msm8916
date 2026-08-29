@@ -53,6 +53,11 @@ properties:
     description: Interrupt to host
     maxItems: 1
 
+  extcon:
+    description: Optional USB connector provider. ZT7554 uses its charger
+      state to select the controller's USB-noise filtering mode.
+    maxItems: 1
+
   vcca-supply:
     description: Analog power supply regulator on the VCCA pin
 
