@@ -42,6 +42,7 @@
 #define IST3038C_CHIP_ON_DELAY_MS	60
 #define IST3038C_CMD_DELAY_MS		40
 #define IST3038C_I2C_RETRY_COUNT	3
+#define IST3038C_MAX_ERROR_COUNT	100
 #define IST3038C_MAX_FINGER_NUM		10
 #define IST3038C_X_MASK			GENMASK(23, 12)
 #define IST3038C_Y_MASK			GENMASK(11, 0)
@@ -73,10 +74,21 @@ struct imagis_ts {
 	struct extcon_dev *extcon;
 	struct notifier_block extcon_nb;
 	struct work_struct extcon_work;
+	struct work_struct reset_work;
 	u32 keycodes[5];
 	int num_keycodes;
+	unsigned int error_count;
 	bool powered;
 };
+
+static void imagis_request_reset(struct imagis_ts *ts)
+{
+	if (++ts->error_count < IST3038C_MAX_ERROR_COUNT)
+		return;
+
+	ts->error_count = 0;
+	schedule_work(&ts->reset_work);
+}
 
 static int imagis_i2c_read_reg(struct imagis_ts *ts,
 			       unsigned int reg, u32 *data)
@@ -258,6 +270,7 @@ static irqreturn_t imagis_interrupt(int irq, void *dev_id)
 	if (error) {
 		dev_err(&ts->client->dev,
 			"failed to read the interrupt message: %d\n", error);
+		imagis_request_reset(ts);
 		goto out;
 	}
 
@@ -266,6 +279,7 @@ static irqreturn_t imagis_interrupt(int irq, void *dev_id)
 		dev_err(&ts->client->dev,
 			"finger count %d is more than maximum supported\n",
 			finger_count);
+		imagis_request_reset(ts);
 		goto out;
 	}
 
@@ -273,6 +287,7 @@ static irqreturn_t imagis_interrupt(int irq, void *dev_id)
 	if (ts->tdata->protocol_b && hweight32(finger_pressed) != finger_count) {
 		dev_warn_ratelimited(&ts->client->dev,
 				     "finger count and status bitmap disagree\n");
+		imagis_request_reset(ts);
 		goto out;
 	}
 
@@ -281,6 +296,7 @@ static irqreturn_t imagis_interrupt(int irq, void *dev_id)
 		if (error) {
 			dev_warn_ratelimited(&ts->client->dev,
 					     "invalid touch frame: %d\n", error);
+			imagis_request_reset(ts);
 			goto out;
 		}
 	}
@@ -313,6 +329,7 @@ static irqreturn_t imagis_interrupt(int irq, void *dev_id)
 				dev_err(&ts->client->dev,
 					"failed to read coordinates for finger %d: %d\n",
 					i, error);
+				imagis_request_reset(ts);
 				goto out;
 			}
 
@@ -340,6 +357,7 @@ static irqreturn_t imagis_interrupt(int irq, void *dev_id)
 
 	input_mt_sync_frame(ts->input_dev);
 	input_sync(ts->input_dev);
+	ts->error_count = 0;
 
 out:
 	return IRQ_HANDLED;
@@ -415,6 +433,28 @@ static int imagis_stop(struct imagis_ts *ts)
 	return 0;
 }
 
+static void imagis_reset_work(struct work_struct *work)
+{
+	struct imagis_ts *ts = container_of(work, struct imagis_ts, reset_work);
+	int error;
+
+	mutex_lock(&ts->input_dev->mutex);
+
+	if (!input_device_enabled(ts->input_dev) || !ts->powered)
+		goto out;
+
+	dev_warn(&ts->client->dev,
+		 "resetting controller after repeated interrupt errors\n");
+	imagis_stop(ts);
+	error = imagis_start(ts);
+	if (error)
+		dev_err(&ts->client->dev,
+			"failed to restart controller: %d\n", error);
+
+out:
+	mutex_unlock(&ts->input_dev->mutex);
+}
+
 static int imagis_input_open(struct input_dev *dev)
 {
 	struct imagis_ts *ts = input_get_drvdata(dev);
@@ -482,13 +522,6 @@ static int imagis_init_input_dev(struct imagis_ts *ts)
 	if (error) {
 		dev_err(&ts->client->dev,
 			"Failed to initialize MT slots: %d", error);
-		return error;
-	}
-
-	error = input_register_device(input_dev);
-	if (error) {
-		dev_err(&ts->client->dev,
-			"Failed to register input device: %d", error);
 		return error;
 	}
 
@@ -576,12 +609,24 @@ static int imagis_probe(struct i2c_client *i2c)
 	if (error)
 		return error;
 
+	error = devm_work_autocancel(dev, &ts->reset_work, imagis_reset_work);
+	if (error)
+		return error;
+
 	if (ts->extcon) {
 		error = devm_work_autocancel(dev, &ts->extcon_work,
 					     imagis_extcon_work);
 		if (error)
 			return error;
+	}
 
+	error = input_register_device(ts->input_dev);
+	if (error) {
+		dev_err(dev, "failed to register input device: %d\n", error);
+		return error;
+	}
+
+	if (ts->extcon) {
 		ts->extcon_nb.notifier_call = imagis_extcon_notifier;
 		error = devm_extcon_register_notifier_all(dev, ts->extcon,
 							  &ts->extcon_nb);
