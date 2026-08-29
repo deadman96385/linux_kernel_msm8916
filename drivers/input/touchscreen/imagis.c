@@ -4,6 +4,8 @@
 #include <linux/bitops.h>
 #include <linux/bits.h>
 #include <linux/delay.h>
+#include <linux/devm-helpers.h>
+#include <linux/extcon.h>
 #include <linux/i2c.h>
 #include <linux/input.h>
 #include <linux/input/mt.h>
@@ -12,6 +14,7 @@
 #include <linux/module.h>
 #include <linux/property.h>
 #include <linux/regulator/consumer.h>
+#include <linux/workqueue.h>
 
 #define IST30XX_REG_STATUS		0x20
 #define IST30XX_REG_CHIPID		(0x40000000 | IST3038C_DIRECT_ACCESS)
@@ -35,7 +38,9 @@
 #define IST3038C_REG_TOUCH_STATUS	(IST3038C_REG_HIB_BASE | IST3038C_HIB_ACCESS)
 #define IST3038C_REG_TOUCH_COORD	(IST3038C_REG_HIB_BASE | IST3038C_HIB_ACCESS | 0x8)
 #define IST3038C_REG_INTR_MESSAGE	(IST3038C_REG_HIB_BASE | IST3038C_HIB_ACCESS | 0x4)
+#define IST3038C_REG_HIB_CMD		(IST3038C_REG_HIB_BASE | IST3038C_HIB_ACCESS | 0x3c)
 #define IST3038C_CHIP_ON_DELAY_MS	60
+#define IST3038C_CMD_DELAY_MS		40
 #define IST3038C_I2C_RETRY_COUNT	3
 #define IST3038C_MAX_FINGER_NUM		10
 #define IST3038C_X_MASK			GENMASK(23, 12)
@@ -46,6 +51,8 @@
 #define IST3032C_KEY_STATUS_MASK	GENMASK(20, 16)
 #define IST3038C_INTR_STATUS_MASK	GENMASK(11, 10)
 #define IST3038C_INTR_CHECKSUM_MASK	GENMASK(31, 24)
+#define IST3038C_CMD_SET_SPECIAL_MODE	0x22
+#define IST3038C_SPECIAL_MODE_CHARGER	BIT(0)
 
 struct imagis_properties {
 	unsigned int interrupt_msg_cmd;
@@ -54,6 +61,7 @@ struct imagis_properties {
 	unsigned int whoami_val;
 	bool protocol_b;
 	bool touch_keys_supported;
+	bool charger_mode_supported;
 };
 
 struct imagis_ts {
@@ -62,6 +70,9 @@ struct imagis_ts {
 	struct input_dev *input_dev;
 	struct touchscreen_properties prop;
 	struct regulator_bulk_data supplies[2];
+	struct extcon_dev *extcon;
+	struct notifier_block extcon_nb;
+	struct work_struct extcon_work;
 	u32 keycodes[5];
 	int num_keycodes;
 	bool powered;
@@ -103,6 +114,87 @@ static int imagis_i2c_read_reg(struct imagis_ts *ts,
 	} while (--retry);
 
 	return error;
+}
+
+static int imagis_i2c_write_reg(struct imagis_ts *ts,
+				unsigned int reg, u32 data)
+{
+	__be32 buf[] = { cpu_to_be32(reg), cpu_to_be32(data) };
+	struct i2c_msg msg = {
+		.addr = ts->client->addr,
+		.buf = (u8 *)buf,
+		.len = sizeof(buf),
+	};
+	int ret, error;
+	int retry = IST3038C_I2C_RETRY_COUNT;
+
+	do {
+		ret = i2c_transfer(ts->client->adapter, &msg, 1);
+		if (ret == 1)
+			return 0;
+
+		error = ret < 0 ? ret : -EIO;
+	} while (--retry);
+
+	return error;
+}
+
+static int imagis_set_charger_mode(struct imagis_ts *ts)
+{
+	static const unsigned int charger_cables[] = {
+		EXTCON_CHG_USB_SDP,
+		EXTCON_CHG_USB_CDP,
+		EXTCON_CHG_USB_DCP,
+	};
+	u32 mode = 0;
+	int error;
+	int i;
+
+	for (i = 0; i < ARRAY_SIZE(charger_cables); i++) {
+		error = extcon_get_state(ts->extcon, charger_cables[i]);
+		if (error < 0)
+			return error;
+		if (error > 0) {
+			mode = IST3038C_SPECIAL_MODE_CHARGER;
+			break;
+		}
+	}
+
+	error = imagis_i2c_write_reg(ts, IST3038C_REG_HIB_CMD,
+				     IST3038C_CMD_SET_SPECIAL_MODE << 16 | mode);
+	if (error)
+		return error;
+
+	msleep(IST3038C_CMD_DELAY_MS);
+	dev_dbg(&ts->client->dev, "charger mode %s\n",
+		mode ? "enabled" : "disabled");
+
+	return 0;
+}
+
+static void imagis_extcon_work(struct work_struct *work)
+{
+	struct imagis_ts *ts = container_of(work, struct imagis_ts, extcon_work);
+	int error = 0;
+
+	mutex_lock(&ts->input_dev->mutex);
+	if (input_device_enabled(ts->input_dev) && ts->powered)
+		error = imagis_set_charger_mode(ts);
+	mutex_unlock(&ts->input_dev->mutex);
+
+	if (error)
+		dev_warn_ratelimited(&ts->client->dev,
+				     "failed to update charger mode: %d\n", error);
+}
+
+static int imagis_extcon_notifier(struct notifier_block *nb,
+				  unsigned long event, void *ptr)
+{
+	struct imagis_ts *ts = container_of(nb, struct imagis_ts, extcon_nb);
+
+	schedule_work(&ts->extcon_work);
+
+	return NOTIFY_OK;
 }
 
 static u8 imagis_frame_checksum(u32 intr_message, const u32 *coords,
@@ -289,6 +381,13 @@ static int imagis_start(struct imagis_ts *ts)
 	if (error)
 		return error;
 
+	if (ts->extcon) {
+		error = imagis_set_charger_mode(ts);
+		if (error)
+			dev_warn(&ts->client->dev,
+				 "failed to set charger mode: %d\n", error);
+	}
+
 	enable_irq(ts->client->irq);
 
 	return 0;
@@ -438,7 +537,7 @@ static int imagis_probe(struct i2c_client *i2c)
 		return error;
 	}
 
-	error = devm_add_action_or_reset(dev, imagis_power_off, ts);
+		error = devm_add_action_or_reset(dev, imagis_power_off, ts);
 	if (error) {
 		dev_err(dev, "failed to install poweroff action: %d\n", error);
 		return error;
@@ -455,6 +554,14 @@ static int imagis_probe(struct i2c_client *i2c)
 		return -EINVAL;
 	}
 
+	if (ts->tdata->charger_mode_supported &&
+	    device_property_present(dev, "extcon")) {
+		ts->extcon = extcon_get_edev_by_phandle(dev, 0);
+		if (IS_ERR(ts->extcon))
+			return dev_err_probe(dev, PTR_ERR(ts->extcon),
+					     "failed to get USB extcon\n");
+	}
+
 	error = devm_request_threaded_irq(dev, i2c->irq,
 					  NULL, imagis_interrupt,
 					  IRQF_ONESHOT | IRQF_NO_AUTOEN,
@@ -468,6 +575,20 @@ static int imagis_probe(struct i2c_client *i2c)
 	error = imagis_init_input_dev(ts);
 	if (error)
 		return error;
+
+	if (ts->extcon) {
+		error = devm_work_autocancel(dev, &ts->extcon_work,
+					     imagis_extcon_work);
+		if (error)
+			return error;
+
+		ts->extcon_nb.notifier_call = imagis_extcon_notifier;
+		error = devm_extcon_register_notifier_all(dev, ts->extcon,
+							  &ts->extcon_nb);
+		if (error)
+			return dev_err_probe(dev, error,
+					     "failed to register USB extcon notifier\n");
+	}
 
 	/* The input device open callback owns the runtime power reference. */
 	imagis_power_off(ts);
@@ -519,6 +640,7 @@ static const struct imagis_properties imagis_3032c_data = {
 	.whoami_val = IST3032C_WHOAMI,
 	.touch_keys_supported = true,
 	.protocol_b = true,
+	.charger_mode_supported = true,
 };
 
 static const struct imagis_properties imagis_3038_data = {
@@ -542,6 +664,7 @@ static const struct imagis_properties imagis_3038c_data = {
 	.whoami_cmd = IST3038C_REG_CHIPID,
 	.whoami_val = IST3038C_WHOAMI,
 	.protocol_b = true,
+	.charger_mode_supported = true,
 };
 
 static const struct imagis_properties imagis_3038h_data = {
