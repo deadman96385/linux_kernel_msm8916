@@ -57,7 +57,7 @@ void nxp_nci_fw_work_complete(struct nxp_nci_info *info, int result)
 	if (info->phy_ops->set_mode) {
 		r = info->phy_ops->set_mode(info->phy_id, NXP_NCI_MODE_COLD);
 		if (r < 0 && result == 0)
-			result = -r;
+			result = r;
 	}
 
 	info->mode = NXP_NCI_MODE_COLD;
