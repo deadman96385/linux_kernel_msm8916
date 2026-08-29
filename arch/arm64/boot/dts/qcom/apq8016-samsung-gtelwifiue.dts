@@ -60,9 +60,11 @@
 			pinctrl-0 = <&backlight_enable_default>;
 			pinctrl-names = "default";
 
-			default-brightness = <511>;
+			max-brightness = <255>;
+			default-brightness = <120>;
 			richtek,led-current-microamp = <25000>;
 			richtek,led-driver-headroom-microvolt = <570000>;
+			richtek,device-config = /bits/ 8 <0x05 0x08>;
 		};
 	};
 
@@ -102,22 +104,39 @@
 		startup-delay-us = <150>;
 	};
 
-	reg_lcd: regulator-lcd {
+	reg_lcd_vdd: regulator-lcd-vdd {
 		compatible = "regulator-fixed";
-		regulator-name = "lcd";
+		regulator-name = "lcd-vdd";
 		regulator-min-microvolt = <3300000>;
 		regulator-max-microvolt = <3300000>;
 
 		gpio = <&tlmm 8 GPIO_ACTIVE_HIGH>;
 		enable-active-high;
 
-		pinctrl-0 = <&reg_lcd_en_default>;
+		pinctrl-0 = <&lcd_vdd_en_default>;
 		pinctrl-names = "default";
+	};
 
-		// FIXME: This breaks turning panel back on
-		regulator-always-on;
-		regulator-boot-on;
-		startup-delay-us = <150>;
+	reg_lcd_vsp: regulator-lcd-vsp {
+		compatible = "regulator-fixed";
+		regulator-name = "lcd-vsp";
+
+		gpio = <&tlmm 20 GPIO_ACTIVE_HIGH>;
+		enable-active-high;
+
+		pinctrl-0 = <&lcd_vsp_en_default>;
+		pinctrl-names = "default";
+	};
+
+	reg_lcd_vsn: regulator-lcd-vsn {
+		compatible = "regulator-fixed";
+		regulator-name = "lcd-vsn";
+
+		gpio = <&tlmm 120 GPIO_ACTIVE_HIGH>;
+		enable-active-high;
+
+		pinctrl-0 = <&lcd_vsn_en_default>;
+		pinctrl-names = "default";
 	};
 };
 
@@ -326,11 +345,13 @@
 
 &mdss_dsi0 {
 	panel@0 {
-		compatible = "samsung,nt51017-b4p096wx5vp09";
+		compatible = "boe,tv096wxm-nh0";
 		reg = <0>;
 
 		backlight = <&backlight>;
-		lcd-supply = <&reg_lcd>;
+		vdd-supply = <&reg_lcd_vdd>;
+		vsp-supply = <&reg_lcd_vsp>;
+		vsn-supply = <&reg_lcd_vsn>;
 
 		port {
 			panel_in: endpoint {
@@ -501,8 +522,22 @@
 		bias-disable;
 	};
 
-	reg_lcd_en_default: reg-lcd-en-default-state {
+	lcd_vdd_en_default: lcd-vdd-en-default-state {
 		pins = "gpio8";
+		function = "gpio";
+		drive-strength = <2>;
+		bias-disable;
+	};
+
+	lcd_vsp_en_default: lcd-vsp-en-default-state {
+		pins = "gpio20";
+		function = "gpio";
+		drive-strength = <2>;
+		bias-disable;
+	};
+
+	lcd_vsn_en_default: lcd-vsn-en-default-state {
+		pins = "gpio120";
 		function = "gpio";
 		drive-strength = <2>;
 		bias-disable;
