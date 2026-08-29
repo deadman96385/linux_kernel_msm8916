@@ -24,6 +24,7 @@
 #define DELAY_MS_SM5703		2700
 #define DETECT_RETRY_MS			1000
 #define DETECT_RETRY_MAX		10
+#define IRQ_SETTLE_MS_SM5703		100
 #define SM5703_CONTROL_RESET_DEFAULT	0x1f
 
 struct muic_irq {
@@ -90,6 +91,7 @@ struct sm5502_type {
 	unsigned int vbus_valid_reg;
 	unsigned int vbus_valid_mask;
 	unsigned int detect_delay_ms;
+	unsigned int irq_settle_delay_ms;
 	unsigned int usb_vbus_sw;
 	bool force_manual_path;
 	bool ack_irqs_before_enable;
@@ -769,7 +771,8 @@ static void sm5502_muic_irq_work(struct work_struct *work)
 	struct sm5502_muic_info *info = container_of(work,
 			struct sm5502_muic_info, irq_work);
 	unsigned long flags;
-	bool pending;
+	unsigned int retry_delay_ms;
+	bool detached, pending, retry;
 	int ret;
 
 	if (IS_ERR_OR_NULL(info->edev)) {
@@ -793,14 +796,24 @@ static void sm5502_muic_irq_work(struct work_struct *work)
 
 		mutex_lock(&info->mutex);
 		ret = sm5502_muic_update_cable(info, false);
-		if (ret < 0)
+		detached = !sm5502_muic_cable_supported(info->prev_cable_type);
+		retry = ret < 0 || (info->type->retry_detached && detached);
+		if (retry)
 			info->detect_retries = 0;
 		mutex_unlock(&info->mutex);
-		if (ret < 0) {
+		if (retry) {
+			/*
+			 * SM5703 downstream waits before classifying an IRQ.  Keep the
+			 * immediate scan so a real detach is visible without delay, then
+			 * rescan after its settling interval if the result is incomplete.
+			 */
+			retry_delay_ms = info->type->irq_settle_delay_ms;
+			if (!retry_delay_ms)
+				retry_delay_ms = DETECT_RETRY_MS;
 			mod_delayed_work(system_power_efficient_wq,
 					 &info->wq_detcable,
-					 msecs_to_jiffies(DETECT_RETRY_MS));
-			if (ret != -EAGAIN)
+					 msecs_to_jiffies(retry_delay_ms));
+			if (ret < 0 && ret != -EAGAIN)
 				dev_warn(info->dev,
 					 "MUIC cable rescan incomplete, retrying: %d\n",
 					 ret);
@@ -1178,6 +1191,7 @@ static const struct sm5502_type sm5703_data = {
 	.vbus_valid_reg = SM5703_REG_VBUSINVALID,
 	.vbus_valid_mask = SM5703_REG_VBUSIN_VALID_MASK,
 	.detect_delay_ms = DELAY_MS_SM5703,
+	.irq_settle_delay_ms = IRQ_SETTLE_MS_SM5703,
 	.usb_vbus_sw = VBUSIN_SWITCH_VBUSOUT,
 	.force_manual_path = true,
 	.ack_irqs_before_enable = true,
