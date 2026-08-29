@@ -775,6 +775,8 @@ static void sm5502_muic_irq_work(struct work_struct *work)
 
 		mutex_lock(&info->mutex);
 		ret = sm5502_muic_update_cable(info, false);
+		if (ret == -EAGAIN)
+			info->detect_retries = 0;
 		mutex_unlock(&info->mutex);
 		if (ret == -EAGAIN) {
 			mod_delayed_work(system_power_efficient_wq,
