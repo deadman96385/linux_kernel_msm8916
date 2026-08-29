@@ -33,6 +33,11 @@ properties:
   vio-supply:
     description: VIO power supply a phandle to a regulator
 
+  vled-supply:
+    description: Power supply for the proximity-sensing IR LED
+
+  wakeup-source: true
+
   io-channels:
     maxItems: 1
     description: ALSOUT ADC channel to read the ambient light
