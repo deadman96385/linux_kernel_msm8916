@@ -134,8 +134,9 @@
 	vdd-supply = <&pm8916_l6>;
 	vddio-supply = <&pm8916_l6>;
 
-	mount-matrix = "0", "-1", "0",
-		       "1", "0", "0",
+	/* Match the axis mapping used by the Samsung K2HH driver. */
+	mount-matrix = "0", "1", "0",
+		       "-1", "0", "0",
 		       "0", "0", "-1";
 };
 

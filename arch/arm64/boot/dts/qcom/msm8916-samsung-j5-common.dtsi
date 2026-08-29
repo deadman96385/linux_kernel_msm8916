@@ -211,6 +211,11 @@
 			pinctrl-names = "default";
 
 			st,drdy-int-pin = <1>;
+
+			/* Match the axis mapping used by the Samsung K2HH driver. */
+			mount-matrix = "-1", "0", "0",
+				       "0", "-1", "0",
+				       "0", "0", "-1";
 		};
 	};
 
