@@ -537,7 +537,7 @@ static int imagis_probe(struct i2c_client *i2c)
 		return error;
 	}
 
-		error = devm_add_action_or_reset(dev, imagis_power_off, ts);
+	error = devm_add_action_or_reset(dev, imagis_power_off, ts);
 	if (error) {
 		dev_err(dev, "failed to install poweroff action: %d\n", error);
 		return error;
