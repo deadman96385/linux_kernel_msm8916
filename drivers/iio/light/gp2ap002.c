@@ -34,6 +34,7 @@
 #include <linux/interrupt.h>
 #include <linux/bits.h>
 #include <linux/math64.h>
+#include <linux/mutex.h>
 #include <linux/pm.h>
 
 #define GP2AP002_PROX_CHANNEL 0
@@ -129,11 +130,13 @@
  * @dev: pointer to parent device
  * @vdd: regulator controlling VDD
  * @vio: regulator controlling VIO
+ * @vled: optional regulator controlling the proximity IR LED
  * @alsout: IIO ADC channel to convert the ALSOUT signal
  * @hys_far: hysteresis control from device tree
  * @hys_close: hysteresis control from device tree
  * @is_gp2ap002s00f: this is the GP2AP002F variant of the chip
  * @irq: the IRQ line used by this device
+ * @lock: serialize event enable state and its runtime PM reference
  * @enabled: we cannot read the status of the hardware so we need to
  * keep track of whether the event is enabled using this state variable
  */
@@ -142,11 +145,13 @@ struct gp2ap002 {
 	struct device *dev;
 	struct regulator *vdd;
 	struct regulator *vio;
+	struct regulator *vled;
 	struct iio_channel *alsout;
 	u8 hys_far;
 	u8 hys_close;
 	bool is_gp2ap002s00f;
 	int irq;
+	struct mutex lock; /* Serialize event configuration */
 	bool enabled;
 };
 
@@ -158,7 +163,7 @@ static irqreturn_t gp2ap002_prox_irq(int irq, void *d)
 	int val;
 	int ret;
 
-	if (!gp2ap002->enabled)
+	if (!READ_ONCE(gp2ap002->enabled))
 		goto err_retrig;
 
 	ret = regmap_read(gp2ap002->map, GP2AP002_PROX, &val);
@@ -176,7 +181,7 @@ static irqreturn_t gp2ap002_prox_irq(int irq, void *d)
 			dev_err(gp2ap002->dev,
 				"error setting up proximity hysteresis\n");
 		ev = IIO_UNMOD_EVENT_CODE(IIO_PROXIMITY, GP2AP002_PROX_CHANNEL,
-					IIO_EV_TYPE_THRESH, IIO_EV_DIR_RISING);
+				       IIO_EV_TYPE_THRESH, IIO_EV_DIR_RISING);
 	} else {
 		/* Far */
 		dev_dbg(gp2ap002->dev, "far\n");
@@ -186,7 +191,7 @@ static irqreturn_t gp2ap002_prox_irq(int irq, void *d)
 			dev_err(gp2ap002->dev,
 				"error setting up proximity hysteresis\n");
 		ev = IIO_UNMOD_EVENT_CODE(IIO_PROXIMITY, GP2AP002_PROX_CHANNEL,
-					IIO_EV_TYPE_THRESH, IIO_EV_DIR_FALLING);
+				       IIO_EV_TYPE_THRESH, IIO_EV_DIR_FALLING);
 	}
 	iio_push_event(indio_dev, ev, iio_get_time_ns(indio_dev));
 
@@ -244,13 +249,15 @@ static int gp2ap002_get_lux(struct gp2ap002 *gp2ap002)
 }
 
 static int gp2ap002_read_raw(struct iio_dev *indio_dev,
-			   struct iio_chan_spec const *chan,
-			   int *val, int *val2, long mask)
+			    struct iio_chan_spec const *chan,
+			    int *val, int *val2, long mask)
 {
 	struct gp2ap002 *gp2ap002 = iio_priv(indio_dev);
 	int ret;
 
-	pm_runtime_get_sync(gp2ap002->dev);
+	ret = pm_runtime_resume_and_get(gp2ap002->dev);
+	if (ret < 0)
+		return ret;
 
 	switch (mask) {
 	case IIO_CHAN_INFO_RAW:
@@ -271,6 +278,7 @@ static int gp2ap002_read_raw(struct iio_dev *indio_dev,
 	}
 
 out:
+	pm_runtime_mark_last_busy(gp2ap002->dev);
 	pm_runtime_put_autosuspend(gp2ap002->dev);
 
 	return ret;
@@ -332,7 +340,7 @@ static int gp2ap002_read_event_config(struct iio_dev *indio_dev,
 	 * We just keep track of this internally, as it is not possible to
 	 * query the hardware.
 	 */
-	return gp2ap002->enabled;
+	return READ_ONCE(gp2ap002->enabled);
 }
 
 static int gp2ap002_write_event_config(struct iio_dev *indio_dev,
@@ -342,6 +350,12 @@ static int gp2ap002_write_event_config(struct iio_dev *indio_dev,
 				       bool state)
 {
 	struct gp2ap002 *gp2ap002 = iio_priv(indio_dev);
+	int ret = 0;
+
+	mutex_lock(&gp2ap002->lock);
+
+	if (state == READ_ONCE(gp2ap002->enabled))
+		goto out_unlock;
 
 	if (state) {
 		/*
@@ -349,14 +363,21 @@ static int gp2ap002_write_event_config(struct iio_dev *indio_dev,
 		 * already) and reintialize the sensor by using runtime_pm
 		 * callbacks.
 		 */
-		pm_runtime_get_sync(gp2ap002->dev);
-		gp2ap002->enabled = true;
+		ret = pm_runtime_resume_and_get(gp2ap002->dev);
+		if (ret < 0)
+			goto out_unlock;
+
+		WRITE_ONCE(gp2ap002->enabled, true);
 	} else {
+		WRITE_ONCE(gp2ap002->enabled, false);
+		pm_runtime_mark_last_busy(gp2ap002->dev);
 		pm_runtime_put_autosuspend(gp2ap002->dev);
-		gp2ap002->enabled = false;
 	}
 
-	return 0;
+out_unlock:
+	mutex_unlock(&gp2ap002->lock);
+
+	return ret < 0 ? ret : 0;
 }
 
 static const struct iio_info gp2ap002_info = {
@@ -423,6 +444,50 @@ static const struct regmap_bus gp2ap002_regmap_bus = {
 	.reg_write = gp2ap002_regmap_i2c_write,
 };
 
+static int gp2ap002_power_on(struct gp2ap002 *gp2ap002)
+{
+	int ret;
+
+	ret = regulator_enable(gp2ap002->vdd);
+	if (ret)
+		return dev_err_probe(gp2ap002->dev, ret,
+				     "failed to enable VDD regulator\n");
+
+	ret = regulator_enable(gp2ap002->vio);
+	if (ret) {
+		dev_err(gp2ap002->dev, "failed to enable VIO regulator\n");
+		goto disable_vdd;
+	}
+
+	if (gp2ap002->vled) {
+		ret = regulator_enable(gp2ap002->vled);
+		if (ret) {
+			dev_err(gp2ap002->dev,
+				"failed to enable VLED regulator\n");
+			goto disable_vio;
+		}
+	}
+
+	msleep(20);
+
+	return 0;
+
+disable_vio:
+	regulator_disable(gp2ap002->vio);
+disable_vdd:
+	regulator_disable(gp2ap002->vdd);
+
+	return ret;
+}
+
+static void gp2ap002_power_off(struct gp2ap002 *gp2ap002)
+{
+	if (gp2ap002->vled)
+		regulator_disable(gp2ap002->vled);
+	regulator_disable(gp2ap002->vio);
+	regulator_disable(gp2ap002->vdd);
+}
+
 static int gp2ap002_probe(struct i2c_client *client)
 {
 	struct gp2ap002 *gp2ap002;
@@ -447,6 +512,7 @@ static int gp2ap002_probe(struct i2c_client *client)
 
 	gp2ap002 = iio_priv(indio_dev);
 	gp2ap002->dev = dev;
+	mutex_init(&gp2ap002->lock);
 
 	/*
 	 * Check the device compatible like this makes it possible to use
@@ -524,10 +590,20 @@ static int gp2ap002_probe(struct i2c_client *client)
 		return dev_err_probe(dev, PTR_ERR(gp2ap002->vio),
 				     "failed to get VIO regulator\n");
 
+	gp2ap002->vled = devm_regulator_get_optional(dev, "vled");
+	if (IS_ERR(gp2ap002->vled)) {
+		ret = PTR_ERR(gp2ap002->vled);
+		if (ret != -ENODEV)
+			return dev_err_probe(dev, ret,
+					     "failed to get VLED regulator\n");
+
+		gp2ap002->vled = NULL;
+	}
+
 	/* Operating voltage 2.4V .. 3.6V according to datasheet */
 	ret = regulator_set_voltage(gp2ap002->vdd, 2400000, 3600000);
 	if (ret) {
-		dev_err(dev, "failed to sett VDD voltage\n");
+		dev_err(dev, "failed to set VDD voltage\n");
 		return ret;
 	}
 
@@ -543,18 +619,9 @@ static int gp2ap002_probe(struct i2c_client *client)
 		return ret;
 	}
 
-	ret = regulator_enable(gp2ap002->vdd);
-	if (ret) {
-		dev_err(dev, "failed to enable VDD regulator\n");
+	ret = gp2ap002_power_on(gp2ap002);
+	if (ret)
 		return ret;
-	}
-	ret = regulator_enable(gp2ap002->vio);
-	if (ret) {
-		dev_err(dev, "failed to enable VIO regulator\n");
-		goto out_disable_vdd;
-	}
-
-	msleep(20);
 
 	/*
 	 * Initialize the device and signal to runtime PM that now we are
@@ -563,7 +630,7 @@ static int gp2ap002_probe(struct i2c_client *client)
 	ret = gp2ap002_init(gp2ap002);
 	if (ret) {
 		dev_err(dev, "initialization failed\n");
-		goto out_disable_vio;
+		goto out_power_off;
 	}
 	pm_runtime_get_noresume(dev);
 	pm_runtime_set_active(dev);
@@ -584,10 +651,6 @@ static int gp2ap002_probe(struct i2c_client *client)
 	 * measurement after power-on, do not shut it down unnecessarily.
 	 * Set autosuspend to a one second.
 	 */
-	pm_runtime_set_autosuspend_delay(dev, 1000);
-	pm_runtime_use_autosuspend(dev);
-	pm_runtime_put(dev);
-
 	indio_dev->info = &gp2ap002_info;
 	indio_dev->name = "gp2ap002";
 	indio_dev->channels = gp2ap002_channels;
@@ -600,19 +663,24 @@ static int gp2ap002_probe(struct i2c_client *client)
 
 	ret = iio_device_register(indio_dev);
 	if (ret)
-		goto out_disable_pm;
+		goto out_disable_irq;
+
+	pm_runtime_set_autosuspend_delay(dev, 1000);
+	pm_runtime_use_autosuspend(dev);
+	pm_runtime_mark_last_busy(dev);
+	pm_runtime_put_autosuspend(dev);
+
 	dev_dbg(dev, "Sharp GP2AP002 probed successfully\n");
 
 	return 0;
 
+out_disable_irq:
+	disable_irq(gp2ap002->irq);
 out_put_pm:
 	pm_runtime_put_noidle(dev);
-out_disable_pm:
 	pm_runtime_disable(dev);
-out_disable_vio:
-	regulator_disable(gp2ap002->vio);
-out_disable_vdd:
-	regulator_disable(gp2ap002->vdd);
+out_power_off:
+	gp2ap002_power_off(gp2ap002);
 	return ret;
 }
 
@@ -621,13 +689,24 @@ static void gp2ap002_remove(struct i2c_client *client)
 	struct iio_dev *indio_dev = i2c_get_clientdata(client);
 	struct gp2ap002 *gp2ap002 = iio_priv(indio_dev);
 	struct device *dev = &client->dev;
+	int ret;
 
-	pm_runtime_get_sync(dev);
-	pm_runtime_put_noidle(dev);
-	pm_runtime_disable(dev);
+	ret = pm_runtime_resume_and_get(dev);
+	if (ret < 0)
+		dev_warn(dev, "failed to resume device for removal: %d\n", ret);
+	else
+		disable_irq(gp2ap002->irq);
+
+	WRITE_ONCE(gp2ap002->enabled, false);
 	iio_device_unregister(indio_dev);
-	regulator_disable(gp2ap002->vio);
-	regulator_disable(gp2ap002->vdd);
+	pm_runtime_disable(dev);
+
+	if (ret >= 0) {
+		pm_runtime_put_noidle(dev);
+		if (regmap_write(gp2ap002->map, GP2AP002_OPMOD, 0x00))
+			dev_warn(dev, "failed to shut down device during removal\n");
+		gp2ap002_power_off(gp2ap002);
+	}
 }
 
 static int gp2ap002_runtime_suspend(struct device *dev)
@@ -643,14 +722,14 @@ static int gp2ap002_runtime_suspend(struct device *dev)
 	ret = regmap_write(gp2ap002->map, GP2AP002_OPMOD, 0x00);
 	if (ret) {
 		dev_err(gp2ap002->dev, "error setting up operation mode\n");
+		enable_irq(gp2ap002->irq);
 		return ret;
 	}
 	/*
 	 * As these regulators may be shared, at least we are now in
 	 * sleep even if the regulators aren't really turned off.
 	 */
-	regulator_disable(gp2ap002->vio);
-	regulator_disable(gp2ap002->vdd);
+	gp2ap002_power_off(gp2ap002);
 
 	return 0;
 }
@@ -661,22 +740,14 @@ static int gp2ap002_runtime_resume(struct device *dev)
 	struct gp2ap002 *gp2ap002 = iio_priv(indio_dev);
 	int ret;
 
-	ret = regulator_enable(gp2ap002->vdd);
-	if (ret) {
-		dev_err(dev, "failed to enable VDD regulator in resume path\n");
+	ret = gp2ap002_power_on(gp2ap002);
+	if (ret)
 		return ret;
-	}
-	ret = regulator_enable(gp2ap002->vio);
-	if (ret) {
-		dev_err(dev, "failed to enable VIO regulator in resume path\n");
-		return ret;
-	}
-
-	msleep(20);
 
 	ret = gp2ap002_init(gp2ap002);
 	if (ret) {
 		dev_err(dev, "re-initialization failed\n");
+		gp2ap002_power_off(gp2ap002);
 		return ret;
 	}
 
@@ -686,8 +757,33 @@ static int gp2ap002_runtime_resume(struct device *dev)
 	return 0;
 }
 
-static DEFINE_RUNTIME_DEV_PM_OPS(gp2ap002_dev_pm_ops, gp2ap002_runtime_suspend,
-				 gp2ap002_runtime_resume, NULL);
+static int gp2ap002_suspend(struct device *dev)
+{
+	struct iio_dev *indio_dev = dev_get_drvdata(dev);
+	struct gp2ap002 *gp2ap002 = iio_priv(indio_dev);
+
+	/* Leave an enabled proximity event active as a system wake source. */
+	if (device_may_wakeup(dev) && READ_ONCE(gp2ap002->enabled))
+		return 0;
+
+	return pm_runtime_force_suspend(dev);
+}
+
+static int gp2ap002_resume(struct device *dev)
+{
+	struct iio_dev *indio_dev = dev_get_drvdata(dev);
+	struct gp2ap002 *gp2ap002 = iio_priv(indio_dev);
+
+	if (device_may_wakeup(dev) && READ_ONCE(gp2ap002->enabled))
+		return 0;
+
+	return pm_runtime_force_resume(dev);
+}
+
+static const struct dev_pm_ops gp2ap002_dev_pm_ops = {
+	SYSTEM_SLEEP_PM_OPS(gp2ap002_suspend, gp2ap002_resume)
+	RUNTIME_PM_OPS(gp2ap002_runtime_suspend, gp2ap002_runtime_resume, NULL)
+};
 
 static const struct i2c_device_id gp2ap002_id_table[] = {
 	{ .name = "gp2ap002" },
