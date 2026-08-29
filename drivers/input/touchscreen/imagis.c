@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-only
 
 #include <linux/bitfield.h>
+#include <linux/bitops.h>
 #include <linux/bits.h>
 #include <linux/delay.h>
 #include <linux/i2c.h>
@@ -43,6 +44,8 @@
 #define IST3038C_FINGER_COUNT_MASK	GENMASK(15, 12)
 #define IST3038C_FINGER_STATUS_MASK	GENMASK(9, 0)
 #define IST3032C_KEY_STATUS_MASK	GENMASK(20, 16)
+#define IST3038C_INTR_STATUS_MASK	GENMASK(11, 10)
+#define IST3038C_INTR_CHECKSUM_MASK	GENMASK(31, 24)
 
 struct imagis_properties {
 	unsigned int interrupt_msg_cmd;
@@ -61,6 +64,7 @@ struct imagis_ts {
 	struct regulator_bulk_data supplies[2];
 	u32 keycodes[5];
 	int num_keycodes;
+	bool powered;
 };
 
 static int imagis_i2c_read_reg(struct imagis_ts *ts,
@@ -101,11 +105,60 @@ static int imagis_i2c_read_reg(struct imagis_ts *ts,
 	return error;
 }
 
+static u8 imagis_frame_checksum(u32 intr_message, const u32 *coords,
+				unsigned int finger_count)
+{
+	u8 checksum = intr_message;
+	unsigned int i;
+
+	checksum += intr_message >> 8;
+	checksum += intr_message >> 16;
+
+	for (i = 0; i < finger_count; i++) {
+		checksum += coords[i];
+		checksum += coords[i] >> 8;
+		checksum += coords[i] >> 16;
+		checksum += coords[i] >> 24;
+	}
+
+	return checksum;
+}
+
+static int imagis_read_frame(struct imagis_ts *ts, u32 intr_message,
+			     unsigned int finger_count, u32 *coords)
+{
+	unsigned int expected_checksum;
+	unsigned int i;
+	int error;
+
+	if ((intr_message & IST3038C_INTR_STATUS_MASK) !=
+	    IST3038C_INTR_STATUS_MASK)
+		return -EPROTO;
+
+	for (i = 0; i < finger_count; i++) {
+		error = imagis_i2c_read_reg(ts,
+					    ts->tdata->touch_coord_cmd + i * 4,
+					    &coords[i]);
+		if (error)
+			return error;
+	}
+
+	expected_checksum = FIELD_GET(IST3038C_INTR_CHECKSUM_MASK,
+				      intr_message);
+	if (imagis_frame_checksum(intr_message, coords, finger_count) !=
+	    expected_checksum)
+		return -EBADMSG;
+
+	return 0;
+}
+
 static irqreturn_t imagis_interrupt(int irq, void *dev_id)
 {
 	struct imagis_ts *ts = dev_id;
+	u32 coords[IST3038C_MAX_FINGER_NUM];
 	u32 intr_message, finger_status;
 	unsigned int finger_count, finger_pressed, key_pressed;
+	unsigned int coord_index = 0;
 	int i;
 	int error;
 
@@ -125,31 +178,66 @@ static irqreturn_t imagis_interrupt(int irq, void *dev_id)
 	}
 
 	finger_pressed = FIELD_GET(IST3038C_FINGER_STATUS_MASK, intr_message);
+	if (ts->tdata->protocol_b && hweight32(finger_pressed) != finger_count) {
+		dev_warn_ratelimited(&ts->client->dev,
+				     "finger count and status bitmap disagree\n");
+		goto out;
+	}
 
-	for (i = 0; i < finger_count; i++) {
-		if (ts->tdata->protocol_b)
-			error = imagis_i2c_read_reg(ts,
-						    ts->tdata->touch_coord_cmd + (i * 4),
-						    &finger_status);
-		else
-			error = imagis_i2c_read_reg(ts,
-						    ts->tdata->touch_coord_cmd, &finger_status);
+	if (ts->tdata->protocol_b) {
+		error = imagis_read_frame(ts, intr_message, finger_count, coords);
 		if (error) {
-			dev_err(&ts->client->dev,
-				"failed to read coordinates for finger %d: %d\n",
-				i, error);
+			dev_warn_ratelimited(&ts->client->dev,
+					     "invalid touch frame: %d\n", error);
 			goto out;
 		}
+	}
 
-		input_mt_slot(ts->input_dev, i);
-		input_mt_report_slot_state(ts->input_dev, MT_TOOL_FINGER,
-					   finger_pressed & BIT(i));
-		touchscreen_report_pos(ts->input_dev, &ts->prop,
-				       FIELD_GET(IST3038C_X_MASK, finger_status),
-				       FIELD_GET(IST3038C_Y_MASK, finger_status),
-				       true);
-		input_report_abs(ts->input_dev, ABS_MT_TOUCH_MAJOR,
-				 FIELD_GET(IST3038C_AREA_MASK, finger_status));
+	if (ts->tdata->protocol_b) {
+		for (i = 0; i < IST3038C_MAX_FINGER_NUM; i++) {
+			if (!(finger_pressed & BIT(i)))
+				continue;
+
+			finger_status = coords[coord_index++];
+			input_mt_slot(ts->input_dev, i);
+			input_mt_report_slot_state(ts->input_dev,
+						   MT_TOOL_FINGER, true);
+			touchscreen_report_pos(ts->input_dev, &ts->prop,
+					       FIELD_GET(IST3038C_X_MASK,
+							 finger_status),
+					       FIELD_GET(IST3038C_Y_MASK,
+							 finger_status),
+					       true);
+			input_report_abs(ts->input_dev, ABS_MT_TOUCH_MAJOR,
+					 FIELD_GET(IST3038C_AREA_MASK,
+						   finger_status));
+		}
+	} else {
+		for (i = 0; i < finger_count; i++) {
+			error = imagis_i2c_read_reg(ts,
+						    ts->tdata->touch_coord_cmd,
+						    &finger_status);
+			if (error) {
+				dev_err(&ts->client->dev,
+					"failed to read coordinates for finger %d: %d\n",
+					i, error);
+				goto out;
+			}
+
+			input_mt_slot(ts->input_dev, i);
+			input_mt_report_slot_state(ts->input_dev,
+						   MT_TOOL_FINGER,
+						   finger_pressed & BIT(i));
+			touchscreen_report_pos(ts->input_dev, &ts->prop,
+					       FIELD_GET(IST3038C_X_MASK,
+							 finger_status),
+					       FIELD_GET(IST3038C_Y_MASK,
+							 finger_status),
+					       true);
+			input_report_abs(ts->input_dev, ABS_MT_TOUCH_MAJOR,
+					 FIELD_GET(IST3038C_AREA_MASK,
+						   finger_status));
+		}
 	}
 
 	key_pressed = FIELD_GET(IST3032C_KEY_STATUS_MASK, intr_message);
@@ -169,17 +257,25 @@ static void imagis_power_off(void *_ts)
 {
 	struct imagis_ts *ts = _ts;
 
+	if (!ts->powered)
+		return;
+
 	regulator_bulk_disable(ARRAY_SIZE(ts->supplies), ts->supplies);
+	ts->powered = false;
 }
 
 static int imagis_power_on(struct imagis_ts *ts)
 {
 	int error;
 
+	if (ts->powered)
+		return 0;
+
 	error = regulator_bulk_enable(ARRAY_SIZE(ts->supplies), ts->supplies);
 	if (error)
 		return error;
 
+	ts->powered = true;
 	msleep(IST3038C_CHIP_ON_DELAY_MS);
 
 	return 0;
@@ -200,7 +296,20 @@ static int imagis_start(struct imagis_ts *ts)
 
 static int imagis_stop(struct imagis_ts *ts)
 {
+	int i;
+
 	disable_irq(ts->client->irq);
+
+	for (i = 0; i < IST3038C_MAX_FINGER_NUM; i++) {
+		input_mt_slot(ts->input_dev, i);
+		input_mt_report_slot_state(ts->input_dev, MT_TOOL_FINGER, false);
+	}
+
+	for (i = 0; i < ts->num_keycodes; i++)
+		input_report_key(ts->input_dev, ts->keycodes[i], false);
+
+	input_mt_sync_frame(ts->input_dev);
+	input_sync(ts->input_dev);
 
 	imagis_power_off(ts);
 
@@ -309,6 +418,7 @@ static int imagis_probe(struct i2c_client *i2c)
 		return -ENOMEM;
 
 	ts->client = i2c;
+	i2c_set_clientdata(i2c, ts);
 
 	ts->tdata = device_get_match_data(dev);
 	if (!ts->tdata) {
@@ -358,6 +468,9 @@ static int imagis_probe(struct i2c_client *i2c)
 	error = imagis_init_input_dev(ts);
 	if (error)
 		return error;
+
+	/* The input device open callback owns the runtime power reference. */
+	imagis_power_off(ts);
 
 	return 0;
 }
