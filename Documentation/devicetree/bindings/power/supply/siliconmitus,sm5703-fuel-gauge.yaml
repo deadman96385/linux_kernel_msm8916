@@ -1,0 +1,209 @@
+# SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
+%YAML 1.2
+---
+$id: http://devicetree.org/schemas/power/supply/siliconmitus,sm5703-fuel-gauge.yaml#
+$schema: http://devicetree.org/meta-schemas/core.yaml#
+
+title: Silicon Mitus SM5703 Fuel Gauge
+
+maintainers:
+  - Sean Hoyt <seanhoyt963@gmail.com>
+
+description: |
+  The SM5703 fuel gauge is an independent 16-bit little-endian I2C device.
+  Battery characterization tables and calibration values are battery- and
+  board-specific and must be supplied by firmware.
+
+properties:
+  compatible:
+    const: siliconmitus,sm5703-fuel-gauge
+
+  reg:
+    maxItems: 1
+
+  interrupts:
+    maxItems: 1
+
+  wakeup-source: true
+
+  monitored-battery: true
+
+  power-supplies:
+    maxItems: 1
+    description:
+      Charger power supply used to obtain charging state and battery presence.
+
+  siliconmitus,battery-table-0:
+    $ref: /schemas/types.yaml#/definitions/uint32-array
+    description: Discharge voltage-to-capacity model table.
+    minItems: 16
+    maxItems: 16
+    items:
+      maximum: 65535
+
+  siliconmitus,battery-table-1:
+    $ref: /schemas/types.yaml#/definitions/uint32-array
+    description: Charge voltage-to-capacity model table.
+    minItems: 16
+    maxItems: 16
+    items:
+      maximum: 65535
+
+  siliconmitus,battery-table-2:
+    $ref: /schemas/types.yaml#/definitions/uint32-array
+    description: Battery Q model table.
+    minItems: 16
+    maxItems: 16
+    items:
+      maximum: 65535
+
+  siliconmitus,rce-values:
+    $ref: /schemas/types.yaml#/definitions/uint32-array
+    description: Three resistance-capacity estimation register values.
+    minItems: 3
+    maxItems: 3
+    items:
+      maximum: 65535
+
+  siliconmitus,dtcd-value:
+    $ref: /schemas/types.yaml#/definitions/uint32
+    description: Discharge time constant model value.
+    maximum: 65535
+
+  siliconmitus,rs-values:
+    $ref: /schemas/types.yaml#/definitions/uint32-array
+    description: RS, mix-factor, maximum and minimum model values.
+    minItems: 4
+    maxItems: 4
+    items:
+      maximum: 65535
+
+  siliconmitus,vit-period:
+    $ref: /schemas/types.yaml#/definitions/uint32
+    description: Voltage integration period register value.
+    maximum: 65535
+
+  siliconmitus,mix-values:
+    $ref: /schemas/types.yaml#/definitions/uint32-array
+    description: Mix-mode rate and initial blanking register values.
+    minItems: 2
+    maxItems: 2
+    items:
+      maximum: 65535
+
+  siliconmitus,topoff-soc-values:
+    $ref: /schemas/types.yaml#/definitions/uint32-array
+    minItems: 2
+    maxItems: 2
+    items:
+      maximum: 65535
+    description:
+      Top-off SOC enable flag followed by the hardware threshold encoding.
+
+  siliconmitus,voltage-calibration:
+    $ref: /schemas/types.yaml#/definitions/uint32
+    description: Voltage calibration register value.
+    maximum: 65535
+
+  siliconmitus,current-calibration:
+    $ref: /schemas/types.yaml#/definitions/uint32
+    description: Base current calibration register value.
+    maximum: 65535
+
+  siliconmitus,temperature-standard-celsius:
+    description: Temperature at which the base current calibration applies.
+    maximum: 255
+
+  siliconmitus,temperature-offset-divisor:
+    $ref: /schemas/types.yaml#/definitions/uint32
+    description: Temperature-difference divisor used for current calibration.
+    minimum: 1
+    maximum: 65535
+
+  siliconmitus,temperature-offset-calibration:
+    $ref: /schemas/types.yaml#/definitions/uint32
+    description: Current calibration adjustment per temperature step.
+    maximum: 65535
+
+  siliconmitus,charge-offset-calibration:
+    $ref: /schemas/types.yaml#/definitions/uint32
+    description: Current calibration adjustment while charging.
+    maximum: 65535
+
+  siliconmitus,fuel-alert-soc:
+    $ref: /schemas/types.yaml#/definitions/uint32
+    description: Low state-of-charge interrupt threshold in percent.
+    minimum: 0
+    maximum: 100
+    default: 5
+
+  siliconmitus,voltage-alert-microvolt:
+    minimum: 2500000
+    maximum: 5000000
+    default: 3125000
+
+required:
+  - compatible
+  - reg
+  - monitored-battery
+  - siliconmitus,battery-table-0
+  - siliconmitus,battery-table-1
+  - siliconmitus,battery-table-2
+  - siliconmitus,rce-values
+  - siliconmitus,dtcd-value
+  - siliconmitus,rs-values
+  - siliconmitus,vit-period
+  - siliconmitus,mix-values
+  - siliconmitus,topoff-soc-values
+  - siliconmitus,voltage-calibration
+  - siliconmitus,current-calibration
+  - siliconmitus,temperature-standard-celsius
+  - siliconmitus,temperature-offset-divisor
+  - siliconmitus,temperature-offset-calibration
+  - siliconmitus,charge-offset-calibration
+
+allOf:
+  - $ref: power-supply.yaml#
+
+unevaluatedProperties: false
+
+examples:
+  - |
+    #include <dt-bindings/interrupt-controller/irq.h>
+
+    i2c {
+        #address-cells = <1>;
+        #size-cells = <0>;
+
+        fuel-gauge@71 {
+            compatible = "siliconmitus,sm5703-fuel-gauge";
+            reg = <0x71>;
+            interrupt-parent = <&tlmm>;
+            interrupts = <121 IRQ_TYPE_EDGE_FALLING>;
+            monitored-battery = <&battery>;
+            power-supplies = <&charger>;
+
+            siliconmitus,battery-table-0 =
+                <0x1400 0x1b99 0x1bfd 0x1cb5 0x1d65 0x1d9c 0x1dee 0x1e72
+                 0x1ee4 0x1f4d 0x1ff9 0x2077 0x2099 0x220a 0x2270 0x2399>;
+            siliconmitus,battery-table-1 =
+                <0x1400 0x1b99 0x1bfd 0x1cb5 0x1d65 0x1d9c 0x1dee 0x1e72
+                 0x1ee4 0x1f4d 0x1ff9 0x2077 0x2099 0x220a 0x2270 0x2399>;
+            siliconmitus,battery-table-2 =
+                <0x0000 0x0095 0x00e0 0x01b1 0x0327 0x076a 0x0bbd 0x18a5
+                 0x1fc5 0x22a1 0x29d0 0x2cad 0x2e13 0x381f 0x3a66 0x3a93>;
+            siliconmitus,rce-values = <0x0749 0x0580 0x0371>;
+            siliconmitus,dtcd-value = <1>;
+            siliconmitus,rs-values = <0x01ae 0x047a 0x3800 0x00a4>;
+            siliconmitus,vit-period = <0x350a>;
+            siliconmitus,mix-values = <0x0503 0x0004>;
+            siliconmitus,topoff-soc-values = <0 0x0101>;
+            siliconmitus,voltage-calibration = <0x8000>;
+            siliconmitus,current-calibration = <0x7085>;
+            siliconmitus,temperature-standard-celsius = <25>;
+            siliconmitus,temperature-offset-divisor = <10>;
+            siliconmitus,temperature-offset-calibration = <1>;
+            siliconmitus,charge-offset-calibration = <12>;
+        };
+    };
+...
