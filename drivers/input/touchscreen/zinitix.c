@@ -193,6 +193,8 @@ struct bt541_ts_data {
 	u16 firmware_version;
 	u16 regdata_version;
 	u16 icon_status_reg;
+	bool powered;
+	bool running;
 };
 
 static void zinitix_read_delay(struct i2c_client *client)
@@ -322,7 +324,7 @@ static void zinitix_extcon_work(struct work_struct *work)
 	int error = 0;
 
 	mutex_lock(&bt541->input_dev->mutex);
-	if (input_device_enabled(bt541->input_dev))
+	if (bt541->running)
 		error = zinitix_set_usb_detect(bt541);
 	mutex_unlock(&bt541->input_dev->mutex);
 
@@ -747,20 +749,52 @@ out:
 	return IRQ_HANDLED;
 }
 
+static int zinitix_power_off(struct bt541_ts_data *bt541)
+{
+	int error;
+
+	if (!bt541->powered)
+		return 0;
+
+	error = regulator_bulk_disable(ARRAY_SIZE(bt541->supplies),
+				       bt541->supplies);
+	if (!error)
+		bt541->powered = false;
+
+	return error;
+}
+
+static void zinitix_power_off_action(void *data)
+{
+	struct bt541_ts_data *bt541 = data;
+	int error;
+
+	error = zinitix_power_off(bt541);
+	if (error)
+		dev_warn(&bt541->client->dev,
+			 "Failed to disable regulators during cleanup: %d\n", error);
+}
+
 static int zinitix_start(struct bt541_ts_data *bt541)
 {
 	unsigned int power_on_delay_ms = CHIP_ON_DELAY;
 	int error;
 
+	if (bt541->running)
+		return 0;
+
 	if (bt541->chip_info && bt541->chip_info->power_on_delay_ms)
 		power_on_delay_ms = bt541->chip_info->power_on_delay_ms;
 
-	error = regulator_bulk_enable(ARRAY_SIZE(bt541->supplies),
-				      bt541->supplies);
-	if (error) {
-		dev_err(&bt541->client->dev,
-			"Failed to enable regulators: %d\n", error);
-		return error;
+	if (!bt541->powered) {
+		error = regulator_bulk_enable(ARRAY_SIZE(bt541->supplies),
+					      bt541->supplies);
+		if (error) {
+			dev_err(&bt541->client->dev,
+				"Failed to enable regulators: %d\n", error);
+			return error;
+		}
+		bt541->powered = true;
 	}
 
 	msleep(power_on_delay_ms);
@@ -794,11 +828,12 @@ static int zinitix_start(struct bt541_ts_data *bt541)
 	}
 
 	enable_irq(bt541->client->irq);
+	bt541->running = true;
 
 	return 0;
 
 disable_regulators:
-	regulator_bulk_disable(ARRAY_SIZE(bt541->supplies), bt541->supplies);
+	zinitix_power_off(bt541);
 	return error;
 }
 
@@ -806,7 +841,11 @@ static int zinitix_stop(struct bt541_ts_data *bt541)
 {
 	int error;
 
+	if (!bt541->running)
+		return zinitix_power_off(bt541);
+
 	disable_irq(bt541->client->irq);
+	bt541->running = false;
 	zinitix_release_inputs(bt541);
 
 	error = zinitix_write_cmd(bt541->client, ZINITIX_SLEEP_CMD);
@@ -814,8 +853,7 @@ static int zinitix_stop(struct bt541_ts_data *bt541)
 		dev_dbg(&bt541->client->dev,
 			"Failed to send sleep command: %d\n", error);
 
-	error = regulator_bulk_disable(ARRAY_SIZE(bt541->supplies),
-				       bt541->supplies);
+	error = zinitix_power_off(bt541);
 	if (error) {
 		dev_err(&bt541->client->dev,
 			"Failed to disable regulators: %d\n", error);
@@ -933,6 +971,10 @@ static int zinitix_ts_probe(struct i2c_client *client)
 			"Failed to initialize regulators: %d\n", error);
 		return error;
 	}
+	error = devm_add_action_or_reset(&client->dev, zinitix_power_off_action,
+					 bt541);
+	if (error)
+		return error;
 
 	error = devm_request_threaded_irq(&client->dev, client->irq,
 					  NULL, zinitix_ts_irq_handler,
