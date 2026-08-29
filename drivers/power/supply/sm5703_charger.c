@@ -36,6 +36,8 @@
 #define SM5703_AICL_START_DELAY_MS	1200
 #define SM5703_AICL_STEP_DELAY_MS	200
 #define SM5703_MONITOR_INTERVAL_MS	10000
+#define SM5703_SOURCE_RETRY_MS		1000
+#define SM5703_SOURCE_RETRY_MAX		10
 
 enum sm5703_thermal_state {
 	SM5703_THERMAL_UNKNOWN,
@@ -52,7 +54,7 @@ struct sm5703_charger {
 	struct power_supply *psy;
 	struct extcon_dev *extcon;
 	struct notifier_block extcon_nb;
-	struct work_struct extcon_work;
+	struct delayed_work extcon_work;
 	struct delayed_work aicl_work;
 	struct delayed_work monitor_work;
 	/* Serializes source policy and charger register programming. */
@@ -77,6 +79,7 @@ struct sm5703_charger {
 	int temp_stop_max_decic;
 	int monitor_interval_ms;
 	int aicl_irq;
+	unsigned int source_retries;
 	bool aicl_irq_disabled;
 	bool stopping;
 };
@@ -714,27 +717,42 @@ static int sm5703_get_usb_type(struct sm5703_charger *charger,
 static void sm5703_extcon_work(struct work_struct *work)
 {
 	struct sm5703_charger *charger =
-		container_of(work, struct sm5703_charger, extcon_work);
+		container_of(to_delayed_work(work), struct sm5703_charger,
+			     extcon_work);
 	enum power_supply_usb_type type = POWER_SUPPLY_USB_TYPE_UNKNOWN;
+	unsigned int retries;
+	bool retry = false;
 	int ret;
 
 	if (READ_ONCE(charger->stopping))
 		return;
 
 	ret = sm5703_get_usb_type(charger, &type);
-	if (ret) {
-		dev_warn_ratelimited(charger->dev,
-				     "failed to read USB source: %d\n", ret);
+	mutex_lock(&charger->lock);
+	if (charger->stopping) {
+		mutex_unlock(&charger->lock);
 		return;
 	}
-
-	mutex_lock(&charger->lock);
-	ret = sm5703_apply_source_locked(charger, type);
+	if (!ret)
+		ret = sm5703_apply_source_locked(charger, type);
+	if (!ret) {
+		charger->source_retries = 0;
+	} else if (charger->source_retries < SM5703_SOURCE_RETRY_MAX) {
+		charger->source_retries++;
+		retry = true;
+	}
+	retries = charger->source_retries;
 	mutex_unlock(&charger->lock);
 	if (ret)
-		dev_err(charger->dev, "failed to apply USB source: %d\n", ret);
+		dev_warn_ratelimited(charger->dev,
+				     "USB source reconciliation failed (%u/%u retries used): %d\n",
+				     retries,
+				     SM5703_SOURCE_RETRY_MAX, ret);
 
 	power_supply_changed(charger->psy);
+	if (retry)
+		mod_delayed_work(system_wq, &charger->extcon_work,
+				 msecs_to_jiffies(SM5703_SOURCE_RETRY_MS));
 }
 
 static int sm5703_extcon_notifier(struct notifier_block *nb,
@@ -743,8 +761,12 @@ static int sm5703_extcon_notifier(struct notifier_block *nb,
 	struct sm5703_charger *charger =
 		container_of(nb, struct sm5703_charger, extcon_nb);
 
-	if (!READ_ONCE(charger->stopping))
-		schedule_work(&charger->extcon_work);
+	if (!READ_ONCE(charger->stopping)) {
+		mutex_lock(&charger->lock);
+		charger->source_retries = 0;
+		mutex_unlock(&charger->lock);
+		mod_delayed_work(system_wq, &charger->extcon_work, 0);
+	}
 	return NOTIFY_OK;
 }
 
@@ -912,7 +934,7 @@ static void sm5703_charger_stop(void *data)
 	int ret;
 
 	WRITE_ONCE(charger->stopping, true);
-	cancel_work_sync(&charger->extcon_work);
+	cancel_delayed_work_sync(&charger->extcon_work);
 	cancel_delayed_work_sync(&charger->aicl_work);
 	cancel_delayed_work_sync(&charger->monitor_work);
 
@@ -935,7 +957,7 @@ static void sm5703_charger_shutdown(struct platform_device *pdev)
 	 * MFD performs the bootloader handoff after its children have shut down.
 	 */
 	WRITE_ONCE(charger->stopping, true);
-	cancel_work_sync(&charger->extcon_work);
+	cancel_delayed_work_sync(&charger->extcon_work);
 	cancel_delayed_work_sync(&charger->aicl_work);
 	cancel_delayed_work_sync(&charger->monitor_work);
 }
@@ -1081,8 +1103,9 @@ static int sm5703_charger_probe(struct platform_device *pdev)
 	if (ret)
 		return ret;
 
-	ret = devm_work_autocancel(charger->dev, &charger->extcon_work,
-				   sm5703_extcon_work);
+	ret = devm_delayed_work_autocancel(charger->dev,
+					   &charger->extcon_work,
+					   sm5703_extcon_work);
 	if (ret)
 		return ret;
 
@@ -1124,7 +1147,7 @@ static int sm5703_charger_probe(struct platform_device *pdev)
 
 	/* Handle a cable that was already attached before this driver probed. */
 	mod_delayed_work(system_freezable_wq, &charger->monitor_work, 0);
-	schedule_work(&charger->extcon_work);
+	mod_delayed_work(system_wq, &charger->extcon_work, 0);
 
 	return 0;
 }
