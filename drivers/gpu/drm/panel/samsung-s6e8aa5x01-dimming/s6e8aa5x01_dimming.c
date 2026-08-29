@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-2.0-only
-// Portable-source SHA-256: 0826dbc628ead0838e9a00f280e0e52f60c2bc55df5ad18bbcb1bb129944e78a
+// Portable-source SHA-256: 6072b9654299583c211ee19cb480a371b06f401da2a2f14fbf08cc557d8aef93
 #include "s6e8aa5x01_dimming.h"
 
 #include "s6e8aa5x01_curve.h"
@@ -109,6 +109,7 @@ static int s6e8aa5x01_dimming_init_decoded(struct s6e8aa5x01_dimming *dimming,
 	if (ret)
 		return ret;
 
+	dimming->desc = desc;
 	dimming->valid = true;
 	return 0;
 }

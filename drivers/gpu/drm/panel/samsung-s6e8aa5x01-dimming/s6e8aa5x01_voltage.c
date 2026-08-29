@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-2.0-only
-// Portable-source SHA-256: c09b50335042fd50c3b6945e4768b4a894b054dabaeb8793acbe5667a968dc23
+// Portable-source SHA-256: 16ffa982869782e526d7b85c0eb148bd16ceeaed07d0553949bcbb3412dd7454
 #include <linux/kernel.h>
 #include "s6e8aa5x01_voltage.h"
 

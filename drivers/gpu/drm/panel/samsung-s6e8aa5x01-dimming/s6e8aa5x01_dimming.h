@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: GPL-2.0-only */
-// Portable-source SHA-256: 24abd4e00b6f29f5c2d361222181803e84ca6c1853891c274dab8b56afd4f207
+// Portable-source SHA-256: a3ffa5f305e7230cf8784979485084ffc51638227f1e33e4ad21164fbf4c0ed2
 #ifndef S6E8AA5X01_DIMMING_H
 #define S6E8AA5X01_DIMMING_H
 
@@ -20,6 +20,7 @@ struct s6e8aa5x01_dimming_desc {
 
 struct s6e8aa5x01_dimming {
 	bool valid;
+	const struct s6e8aa5x01_dimming_desc *desc;
 	struct s6e8aa5x01_mtp mtp;
 	struct s6e8aa5x01_voltages voltages;
 	struct s6e8aa5x01_gray_table gray;

@@ -1,9 +1,11 @@
 // SPDX-License-Identifier: GPL-2.0-only
 
 #include <kunit/test.h>
+#include <linux/string.h>
 
 #include "s6e8aa5x01_dimming.h"
 #include "s6e8aa5x01_policy.h"
+#include "s6e8aa5x01_update.h"
 
 static const u8 zero_denominator_mtp[S6E8AA5X01_MTP_LEN] = {
 	0x01, 0xc4, 0x00, 0x68, 0x01, 0x8e,
@@ -120,10 +122,68 @@ static void s6e8aa5x01_policy_test(struct kunit *test)
 							     21, 20, false, 0), -ENODATA);
 }
 
+static void s6e8aa5x01_update_test(struct kunit *test)
+{
+	static const u8 zero_mtp[S6E8AA5X01_MTP_LEN];
+	struct s6e8aa5x01_normal_update update;
+	struct s6e8aa5x01_dimming *dimming;
+
+	dimming = kunit_kzalloc(test, sizeof(*dimming), GFP_KERNEL);
+	KUNIT_ASSERT_NOT_NULL(test, dimming);
+	KUNIT_ASSERT_EQ(test, s6e8aa5x01_dimming_init(dimming, s6e8aa5x01_j5_a_variant.dimming,
+						      zero_mtp), 0);
+	KUNIT_ASSERT_EQ(test,
+			s6e8aa5x01_normal_update_build(&update,
+						       &s6e8aa5x01_j5_a_variant, dimming,
+				0, false, 20, false, 0), 0);
+	KUNIT_EXPECT_EQ(test, update.level, (u8)0);
+	KUNIT_EXPECT_FALSE(test, update.acl_enabled);
+	KUNIT_EXPECT_FALSE(test, update.uses_factory_elvss);
+	KUNIT_EXPECT_MEMEQ(test, update.aid,
+			   s6e8aa5x01_j5_a_policy.aid[0], sizeof(update.aid));
+	KUNIT_EXPECT_EQ(test, update.acl[0][0], (u8)0x55);
+	KUNIT_EXPECT_EQ(test, update.acl[1][0], (u8)0xb5);
+	KUNIT_EXPECT_EQ(test, update.temperature[1][1], (u8)0x14);
+	KUNIT_EXPECT_EQ(test, update.temperature_elvss[1][1], (u8)0x05);
+	KUNIT_EXPECT_EQ(test, update.gamma[0], (u8)0xca);
+	KUNIT_EXPECT_MEMEQ(test, &update.gamma[1],
+			   s6e8aa5x01_dimming_gamma(dimming, 0),
+			   S6E8AA5X01_GAMMA_LEN);
+	KUNIT_EXPECT_EQ(test, update.gamma_latch[0], (u8)0xf7);
+	KUNIT_EXPECT_EQ(test, update.gamma_latch[1], (u8)0x03);
+
+	KUNIT_EXPECT_EQ(test,
+			s6e8aa5x01_normal_update_build(&update,
+						       &s6e8aa5x01_j5x_variant, dimming,
+				71, true, -15, true, 0x31), -EINVAL);
+	KUNIT_ASSERT_EQ(test, s6e8aa5x01_dimming_init(dimming, s6e8aa5x01_j5x_variant.dimming,
+						      zero_mtp), 0);
+	KUNIT_ASSERT_EQ(test,
+			s6e8aa5x01_normal_update_build(&update,
+						       &s6e8aa5x01_j5x_variant, dimming,
+				71, true, -15, true, 0x31), 0);
+	KUNIT_EXPECT_EQ(test, update.level, (u8)40);
+	KUNIT_EXPECT_TRUE(test, update.acl_enabled);
+	KUNIT_EXPECT_TRUE(test, update.uses_factory_elvss);
+	KUNIT_EXPECT_EQ(test, update.acl[0][0], (u8)0xb5);
+	KUNIT_EXPECT_EQ(test, update.acl[1][0], (u8)0x55);
+	KUNIT_EXPECT_EQ(test, update.temperature[1][1], (u8)0x8f);
+	KUNIT_EXPECT_EQ(test, update.temperature_elvss[1][1], (u8)0x31);
+
+	memset(&update, 0xa5, sizeof(update));
+	KUNIT_EXPECT_EQ(test,
+			s6e8aa5x01_normal_update_build(&update,
+						       &s6e8aa5x01_j5x_variant, dimming,
+				255, false, 20, false, 0), -ENODATA);
+	KUNIT_EXPECT_EQ(test, update.level, (u8)0xa5);
+	KUNIT_EXPECT_EQ(test, update.gamma_latch[1], (u8)0xa5);
+}
+
 static struct kunit_case s6e8aa5x01_test_cases[] = {
 	KUNIT_CASE(s6e8aa5x01_mtp_test),
 	KUNIT_CASE(s6e8aa5x01_dimming_test),
 	KUNIT_CASE(s6e8aa5x01_policy_test),
+	KUNIT_CASE(s6e8aa5x01_update_test),
 	{ }
 };
 

@@ -13,4 +13,5 @@ s6e8aa5x01-dimming-test-y := \
 	s6e8aa5x01_panel_tables.o \
 	s6e8aa5x01_dimming.o \
 	s6e8aa5x01_policy.o \
+	s6e8aa5x01_update.o \
 	s6e8aa5x01_kunit.o
