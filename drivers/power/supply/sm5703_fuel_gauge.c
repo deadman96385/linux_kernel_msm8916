@@ -914,17 +914,12 @@ static int sm5703_fg_probe(struct i2c_client *client)
 		return dev_err_probe(dev, -EINVAL,
 				     "invalid voltage alert threshold\n");
 
-	psy_config.drv_data = fg;
-	psy_config.fwnode = dev_fwnode(dev);
-	fg->psy = devm_power_supply_register(dev, &sm5703_fg_desc, &psy_config);
-	if (IS_ERR(fg->psy))
-		return dev_err_probe(dev, PTR_ERR(fg->psy),
-				     "failed to register power supply\n");
-
-	ret = sm5703_fg_get_battery_info(fg);
-	if (ret)
-		return ret;
-
+	/*
+	 * Initialize the gauge before publishing its power supply.  device_add()
+	 * emits the add uevent from power_supply_register(), so userspace may read
+	 * capacity as soon as that call returns.  In particular, do not let the
+	 * first capacity reader become responsible for cold-boot model setup.
+	 */
 	mutex_lock(&fg->lock);
 	ret = sm5703_fg_ensure_model(fg, true);
 	if (!ret)
@@ -937,6 +932,17 @@ static int sm5703_fg_probe(struct i2c_client *client)
 	if (ret)
 		return dev_err_probe(dev, ret,
 				     "failed to initialize fuel gauge\n");
+
+	psy_config.drv_data = fg;
+	psy_config.fwnode = dev_fwnode(dev);
+	fg->psy = devm_power_supply_register(dev, &sm5703_fg_desc, &psy_config);
+	if (IS_ERR(fg->psy))
+		return dev_err_probe(dev, PTR_ERR(fg->psy),
+				     "failed to register power supply\n");
+
+	ret = sm5703_fg_get_battery_info(fg);
+	if (ret)
+		return ret;
 
 	if (client->irq > 0) {
 		ret = devm_request_threaded_irq(dev, client->irq, NULL,
