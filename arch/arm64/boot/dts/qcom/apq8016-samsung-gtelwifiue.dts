@@ -127,7 +127,7 @@
 	status = "okay";
 
 	touchscreen@20 {
-		compatible = "zinitix,zt7554", "zinitix,bt541";
+		compatible = "zinitix,zt7554";
 		reg = <0x20>;
 		interrupt-parent = <&tlmm>;
 		interrupts = <13 IRQ_TYPE_EDGE_FALLING>;
