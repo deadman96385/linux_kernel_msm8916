@@ -81,7 +81,7 @@ struct sm5703_fg_model {
 	u16 temp_std;
 	u16 temp_offset;
 	u16 temp_offset_cal;
-	u16 charge_offset_cal;
+	s8 charge_offset_cal;
 };
 
 struct sm5703_fg {
@@ -485,7 +485,7 @@ static int sm5703_fg_update_current_calibration(struct sm5703_fg *fg)
 	if (!ret && value.intval == POWER_SUPPLY_STATUS_CHARGING) {
 		ret = sm5703_fg_read_current(fg, &current_ua);
 		if (!ret && current_ua > 30000)
-			calibration += fg->model.charge_offset_cal << 8;
+			calibration += fg->model.charge_offset_cal * 256;
 	}
 
 	ret = sm5703_fg_read_temperature(fg, &temperature);
@@ -701,6 +701,27 @@ static int sm5703_fg_read_u16(struct device *dev, const char *property,
 	return 0;
 }
 
+static int sm5703_fg_read_s8(struct device *dev, const char *property,
+			     s8 *destination)
+{
+	u32 raw;
+	s32 value;
+	int ret;
+
+	ret = device_property_read_u32(dev, property, &raw);
+	if (ret)
+		return dev_err_probe(dev, ret, "missing %s\n", property);
+
+	value = raw;
+	if (value < S8_MIN || value > S8_MAX)
+		return dev_err_probe(dev, -ERANGE, "%s value out of range\n",
+				     property);
+
+	*destination = value;
+
+	return 0;
+}
+
 static int sm5703_fg_parse_model(struct sm5703_fg *fg)
 {
 	struct sm5703_fg_model *model = &fg->model;
@@ -771,9 +792,9 @@ static int sm5703_fg_parse_model(struct sm5703_fg *fg)
 				 &model->temp_offset_cal);
 	if (ret)
 		return ret;
-	return sm5703_fg_read_u16(fg->dev,
-				  "siliconmitus,charge-offset-calibration",
-				  &model->charge_offset_cal);
+	return sm5703_fg_read_s8(fg->dev,
+				 "siliconmitus,charge-offset-calibration",
+				 &model->charge_offset_cal);
 }
 
 static int sm5703_fg_get_battery_info(struct sm5703_fg *fg)
