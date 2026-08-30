@@ -331,6 +331,105 @@
 	status = "okay";
 };
 
+&camss {
+	status = "okay";
+
+	ports {
+		port@0 {
+			reg = <0>;
+
+			csiphy0_ep: endpoint {
+				clock-noncontinuous;
+				data-lanes = <0 2>;
+				remote-endpoint = <&s5k4ecgx_ep>;
+			};
+		};
+
+		port@1 {
+			reg = <1>;
+
+			csiphy1_ep: endpoint {
+				clock-noncontinuous;
+				data-lanes = <0>;
+				remote-endpoint = <&sr200pc20_ep>;
+			};
+		};
+	};
+};
+
+&cci {
+	status = "okay";
+};
+
+&cci_i2c0 {
+	clock-frequency = <400000>;
+
+	camera@20 {
+		compatible = "siliconfile,sr200pc20";
+		reg = <0x20>;
+
+		clocks = <&gcc GCC_CAMSS_MCLK1_CLK>;
+		clock-names = "xclk";
+		assigned-clocks = <&gcc GCC_CAMSS_MCLK1_CLK>;
+		assigned-clock-rates = <26000000>;
+
+		pinctrl-0 = <&gtelwifiue_camera_front_default>;
+		pinctrl-names = "default";
+
+		reset-gpios = <&tlmm 28 GPIO_ACTIVE_HIGH>;
+		standby-gpios = <&tlmm 32 GPIO_ACTIVE_HIGH>;
+
+		vana-supply = <&sm5703_ldo1>;
+		vdig-supply = <&sm5703_buck>;
+		vio-supply = <&sm5703_ldo2>;
+
+		orientation = <0>; /* Front facing */
+		rotation = <270>;
+
+		port {
+			sr200pc20_ep: endpoint {
+				clock-noncontinuous;
+				data-lanes = <1>;
+				link-frequencies = /bits/ 64 <144000000>;
+				remote-endpoint = <&csiphy1_ep>;
+			};
+		};
+	};
+
+	camera@56 {
+		compatible = "samsung,s5k4ecgx";
+		reg = <0x56>;
+
+		clocks = <&gcc GCC_CAMSS_MCLK0_CLK>;
+		clock-names = "xclk";
+		assigned-clocks = <&gcc GCC_CAMSS_MCLK0_CLK>;
+		assigned-clock-rates = <26000000>;
+
+		pinctrl-0 = <&gtelwifiue_camera_rear_default>;
+		pinctrl-names = "default";
+
+		reset-gpios = <&tlmm 35 GPIO_ACTIVE_HIGH>;
+		standby-gpios = <&tlmm 34 GPIO_ACTIVE_HIGH>;
+
+		vana-supply = <&sm5703_ldo1>;
+		vdig-supply = <&sm5703_buck>;
+		vio-supply = <&sm5703_ldo2>;
+		vaf-supply = <&sm5703_ldo3>;
+
+		orientation = <1>; /* Back facing */
+		rotation = <90>;
+
+		port {
+			s5k4ecgx_ep: endpoint {
+				clock-noncontinuous;
+				data-lanes = <1 2>;
+				link-frequencies = /bits/ 64 <144000000>;
+				remote-endpoint = <&csiphy0_ep>;
+			};
+		};
+	};
+};
+
 &gpu {
 	status = "okay";
 };
@@ -496,6 +595,38 @@
 		function = "gpio";
 		drive-strength = <2>;
 		bias-disable;
+	};
+
+	gtelwifiue_camera_front_default: gtelwifiue-camera-front-default-state {
+		control-pins {
+			pins = "gpio28", "gpio32";
+			function = "gpio";
+			drive-strength = <2>;
+			bias-disable;
+		};
+
+		mclk-pins {
+			pins = "gpio27";
+			function = "cam_mclk1";
+			drive-strength = <2>;
+			bias-disable;
+		};
+	};
+
+	gtelwifiue_camera_rear_default: gtelwifiue-camera-rear-default-state {
+		control-pins {
+			pins = "gpio34", "gpio35";
+			function = "gpio";
+			drive-strength = <2>;
+			bias-disable;
+		};
+
+		mclk-pins {
+			pins = "gpio26";
+			function = "cam_mclk0";
+			drive-strength = <2>;
+			bias-disable;
+		};
 	};
 
 	jack_default: jack-default-state {
