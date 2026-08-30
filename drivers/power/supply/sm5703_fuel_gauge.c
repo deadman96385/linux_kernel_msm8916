@@ -73,6 +73,8 @@
 #define SM5703_FG_IOCV_CURRENT_MAX_UA	40000
 #define SM5703_FG_IOCV_VOLTAGE_DIFF_UV	30000
 #define SM5703_FG_IOCV_VOLTAGE_STABLE_UV 15000
+#define SM5703_FG_FULL_RESEED_SOC	93
+#define SM5703_FG_FULL_VOLTAGE_MARGIN_UV	50000
 
 struct sm5703_fg_model {
 	u16 table[3][SM5703_FG_TABLE_LENGTH];
@@ -109,6 +111,7 @@ struct sm5703_fg {
 	bool last_iocv_valid;
 	bool previous_voltage_valid;
 	bool rs_manual_active;
+	bool full_reseed_attempted;
 	bool initialized;
 	bool alerts_valid;
 };
@@ -680,6 +683,84 @@ static int sm5703_fg_init_alerts(struct sm5703_fg *fg)
 	return sm5703_fg_write(fg, SM5703_FG_REG_CNTL, control);
 }
 
+static int sm5703_fg_reseed_full(struct sm5703_fg *fg,
+				 struct power_supply *psy, int *capacity)
+{
+	union power_supply_propval status;
+	int current_ua, voltage_uv;
+	u16 iocv;
+	int ret;
+
+	ret = power_supply_get_property_from_supplier(psy,
+						      POWER_SUPPLY_PROP_STATUS,
+						      &status);
+	if (ret)
+		return 0;
+
+	if (status.intval != POWER_SUPPLY_STATUS_FULL) {
+		fg->full_reseed_attempted = false;
+		return 0;
+	}
+
+	if (*capacity >= SM5703_FG_FULL_RESEED_SOC ||
+	    fg->full_reseed_attempted ||
+	    fg->iocv_error_count < SM5703_FG_IOCV_ERROR_COUNT ||
+	    fg->voltage_max_design_uv <= 0)
+		return 0;
+
+	ret = sm5703_fg_read_current(fg, &current_ua);
+	if (ret)
+		return ret;
+	if (abs(current_ua) >= SM5703_FG_IOCV_CURRENT_MAX_UA)
+		return 0;
+
+	ret = sm5703_fg_read_voltage(fg, SM5703_FG_REG_VOLTAGE,
+				     &voltage_uv);
+	if (ret)
+		return ret;
+	if (voltage_uv < fg->voltage_max_design_uv -
+			 SM5703_FG_FULL_VOLTAGE_MARGIN_UV)
+		return 0;
+
+	/*
+	 * TOPOFF is the SM5703's completed-charge indication.  If the cell is
+	 * stable at its configured voltage ceiling while the gauge remains
+	 * below Samsung's 93% full-condition threshold, retained model state is
+	 * no longer plausible.  Reinitialize the model from that bounded cell
+	 * voltage, matching the downstream surge-reset procedure without ever
+	 * allowing charger voltage to raise the seed above the battery rating.
+	 */
+	voltage_uv = min(voltage_uv, fg->voltage_max_design_uv);
+	iocv = DIV_ROUND_CLOSEST_ULL((u64)voltage_uv * 2048, 1000000);
+	fg->full_reseed_attempted = true;
+
+	dev_warn(fg->dev,
+		 "full battery has stale SOC %d%%; re-seeding at %d uV\n",
+		 *capacity, voltage_uv);
+
+	ret = sm5703_fg_write(fg, SM5703_FG_REG_RESET, SM5703_FG_SW_RESET);
+	if (ret)
+		return ret;
+	msleep(200);
+
+	fg->alerts_valid = false;
+	fg->rs_manual_active = false;
+	fg->previous_voltage_valid = false;
+	fg->iocv_error_count = 0;
+
+	ret = sm5703_fg_write_model(fg, &iocv);
+	if (ret)
+		return ret;
+	fg->initialized = true;
+
+	ret = sm5703_fg_init_alerts(fg);
+	if (ret)
+		return ret;
+	fg->alerts_valid = true;
+
+	return sm5703_fg_read_soc(fg, capacity);
+}
+
 static int sm5703_fg_get_supplier_property(struct power_supply *psy,
 					   enum power_supply_property psp,
 					   union power_supply_propval *value)
@@ -736,6 +817,8 @@ static int sm5703_fg_get_property(struct power_supply *psy,
 			ret = sm5703_fg_reconcile_ocv(fg);
 		if (!ret)
 			ret = sm5703_fg_read_soc(fg, &value->intval);
+		if (!ret)
+			ret = sm5703_fg_reseed_full(fg, psy, &value->intval);
 		break;
 	case POWER_SUPPLY_PROP_CAPACITY_ALERT_MIN:
 		value->intval = fg->alert_soc;
