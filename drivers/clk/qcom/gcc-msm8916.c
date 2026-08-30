@@ -850,6 +850,7 @@ static struct clk_rcg2 jpeg0_clk_src = {
 static const struct freq_tbl ftbl_gcc_camss_mclk0_1_clk[] = {
 	F(9600000, P_XO, 2, 0, 0),
 	F(23880000, P_GPLL0, 1, 2, 67),
+	F(26000000, P_GPLL0, 1, 4, 123),
 	F(66670000, P_GPLL0, 12, 0, 0),
 	{ }
 };
