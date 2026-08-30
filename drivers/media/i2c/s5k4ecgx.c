@@ -28,8 +28,8 @@
 #define S5K4ECGX_CMD_READ_DATA		CCI_REG16(0x0f12)
 #define S5K4ECGX_FW_VERSION_REG		0x700001a4
 #define S5K4ECGX_REVISION_REG		0x700001a6
-#define S5K4ECGX_FW_VERSION		0x4ec0
-#define S5K4ECGX_FW_VERSION_MASK	0xfff0
+#define S5K4ECGX_FW_FAMILY		0x4e00
+#define S5K4ECGX_FW_FAMILY_MASK		0xff00
 
 #define S5K4ECGX_XCLK_FREQ		26000000
 #define S5K4ECGX_XCLK_MIN		25900000
@@ -416,9 +416,9 @@ static int s5k4ecgx_identify(struct s5k4ecgx *sensor)
 	if (ret)
 		return dev_err_probe(dev, ret, "failed to read firmware version\n");
 
-	if ((fw_version & S5K4ECGX_FW_VERSION_MASK) != S5K4ECGX_FW_VERSION) {
+	if ((fw_version & S5K4ECGX_FW_FAMILY_MASK) != S5K4ECGX_FW_FAMILY) {
 		dev_err(dev, "firmware mismatch: expected 0x%04x family, got 0x%04llx\n",
-			S5K4ECGX_FW_VERSION, fw_version);
+			S5K4ECGX_FW_FAMILY, fw_version);
 		return -ENODEV;
 	}
 
