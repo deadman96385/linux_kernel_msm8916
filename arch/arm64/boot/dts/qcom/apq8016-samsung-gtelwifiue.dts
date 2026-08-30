@@ -140,6 +140,34 @@
 		pinctrl-0 = <&lcd_vsn_en_default>;
 		pinctrl-names = "default";
 	};
+
+	reg_camera_vana: regulator-camera-vana {
+		compatible = "regulator-fixed";
+		regulator-name = "camera-vana";
+		regulator-min-microvolt = <2800000>;
+		regulator-max-microvolt = <2800000>;
+		vin-supply = <&sm5703_ldo1>;
+
+		gpio = <&tlmm 112 GPIO_ACTIVE_HIGH>;
+		enable-active-high;
+
+		pinctrl-0 = <&camera_vana_en_default>;
+		pinctrl-names = "default";
+	};
+
+	reg_camera_vio: regulator-camera-vio {
+		compatible = "regulator-fixed";
+		regulator-name = "camera-vio";
+		regulator-min-microvolt = <1800000>;
+		regulator-max-microvolt = <1800000>;
+		vin-supply = <&sm5703_ldo2>;
+
+		gpio = <&tlmm 117 GPIO_ACTIVE_HIGH>;
+		enable-active-high;
+
+		pinctrl-0 = <&camera_vio_en_default>;
+		pinctrl-names = "default";
+	};
 };
 
 &blsp_i2c1 {
@@ -379,9 +407,9 @@
 		reset-gpios = <&tlmm 28 GPIO_ACTIVE_HIGH>;
 		standby-gpios = <&tlmm 32 GPIO_ACTIVE_HIGH>;
 
-		vana-supply = <&sm5703_ldo1>;
+		vana-supply = <&reg_camera_vana>;
 		vdig-supply = <&sm5703_buck>;
-		vio-supply = <&sm5703_ldo2>;
+		vio-supply = <&reg_camera_vio>;
 
 		orientation = <0>; /* Front facing */
 		rotation = <270>;
@@ -411,9 +439,9 @@
 		reset-gpios = <&tlmm 35 GPIO_ACTIVE_HIGH>;
 		standby-gpios = <&tlmm 34 GPIO_ACTIVE_HIGH>;
 
-		vana-supply = <&sm5703_ldo1>;
+		vana-supply = <&reg_camera_vana>;
 		vdig-supply = <&sm5703_buck>;
-		vio-supply = <&sm5703_ldo2>;
+		vio-supply = <&reg_camera_vio>;
 		vaf-supply = <&sm5703_ldo3>;
 
 		orientation = <1>; /* Back facing */
@@ -576,6 +604,20 @@
 };
 
 &tlmm {
+	camera_vana_en_default: camera-vana-en-default-state {
+		pins = "gpio112";
+		function = "gpio";
+		drive-strength = <2>;
+		bias-disable;
+	};
+
+	camera_vio_en_default: camera-vio-en-default-state {
+		pins = "gpio117";
+		function = "gpio";
+		drive-strength = <2>;
+		bias-disable;
+	};
+
 	accel_int_default: accel-int-default-state {
 		pins = "gpio115";
 		function = "gpio";
