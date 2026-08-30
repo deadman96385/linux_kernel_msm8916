@@ -23,8 +23,13 @@
 #include <media/v4l2-mediabus.h>
 #include <media/v4l2-subdev.h>
 
-#define S5K4ECGX_CHIP_ID_REG		CCI_REG16(0x0000)
-#define S5K4ECGX_CHIP_ID			0x0507
+#define S5K4ECGX_CMD_READ_ADDR_H	CCI_REG16(0x002c)
+#define S5K4ECGX_CMD_READ_ADDR_L	CCI_REG16(0x002e)
+#define S5K4ECGX_CMD_READ_DATA		CCI_REG16(0x0f12)
+#define S5K4ECGX_FW_VERSION_REG		0x700001a4
+#define S5K4ECGX_REVISION_REG		0x700001a6
+#define S5K4ECGX_FW_VERSION		0x4ec0
+#define S5K4ECGX_FW_VERSION_MASK	0xfff0
 
 #define S5K4ECGX_XCLK_FREQ		26000000
 #define S5K4ECGX_XCLK_MIN		25900000
@@ -400,20 +405,33 @@ static int s5k4ecgx_power_off(struct device *dev)
 static int s5k4ecgx_identify(struct s5k4ecgx *sensor)
 {
 	struct device *dev = sensor->sd.dev;
-	u64 chip_id;
+	u64 fw_version, revision;
 	int ret = 0;
 
-	cci_read(sensor->regmap, S5K4ECGX_CHIP_ID_REG, &chip_id, &ret);
+	cci_write(sensor->regmap, S5K4ECGX_CMD_READ_ADDR_H,
+		  S5K4ECGX_FW_VERSION_REG >> 16, &ret);
+	cci_write(sensor->regmap, S5K4ECGX_CMD_READ_ADDR_L,
+		  S5K4ECGX_FW_VERSION_REG & 0xffff, &ret);
+	cci_read(sensor->regmap, S5K4ECGX_CMD_READ_DATA, &fw_version, &ret);
 	if (ret)
-		return dev_err_probe(dev, ret, "failed to read chip ID\n");
+		return dev_err_probe(dev, ret, "failed to read firmware version\n");
 
-	if (chip_id != S5K4ECGX_CHIP_ID) {
-		dev_err(dev, "chip ID mismatch: expected 0x%04x, got 0x%04llx\n",
-			S5K4ECGX_CHIP_ID, chip_id);
+	if ((fw_version & S5K4ECGX_FW_VERSION_MASK) != S5K4ECGX_FW_VERSION) {
+		dev_err(dev, "firmware mismatch: expected 0x%04x family, got 0x%04llx\n",
+			S5K4ECGX_FW_VERSION, fw_version);
 		return -ENODEV;
 	}
 
-	dev_info(dev, "S5K4ECGX detected (chip ID 0x%04llx)\n", chip_id);
+	cci_write(sensor->regmap, S5K4ECGX_CMD_READ_ADDR_H,
+		  S5K4ECGX_REVISION_REG >> 16, &ret);
+	cci_write(sensor->regmap, S5K4ECGX_CMD_READ_ADDR_L,
+		  S5K4ECGX_REVISION_REG & 0xffff, &ret);
+	cci_read(sensor->regmap, S5K4ECGX_CMD_READ_DATA, &revision, &ret);
+	if (ret)
+		return dev_err_probe(dev, ret, "failed to read firmware revision\n");
+
+	dev_info(dev, "S5K4ECGX detected (firmware 0x%04llx, revision 0x%04llx)\n",
+		 fw_version, revision);
 	return 0;
 }
 
