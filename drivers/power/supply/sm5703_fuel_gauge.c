@@ -36,6 +36,7 @@
 #define SM5703_FG_REG_RS_MIX_FACTOR	0x25
 #define SM5703_FG_REG_RS_MAX		0x26
 #define SM5703_FG_REG_RS_MIN		0x27
+#define SM5703_FG_REG_RS_MAN		0x29
 #define SM5703_FG_REG_VOLT_CAL		0x2b
 #define SM5703_FG_REG_CURR_CAL		0x2c
 #define SM5703_FG_REG_IOCV_MAN		0x2e
@@ -58,6 +59,7 @@
 #define SM5703_FG_CNTL_MIX_MODE		BIT(15)
 #define SM5703_FG_CNTL_TEMP_MEASURE	BIT(14)
 #define SM5703_FG_CNTL_TOPOFF_SOC	BIT(13)
+#define SM5703_FG_CNTL_RS_MAN_MODE	BIT(11)
 #define SM5703_FG_CNTL_MANUAL_OCV	BIT(10)
 #define SM5703_FG_CNTL_LOW_SOC_IRQ	BIT(3)
 #define SM5703_FG_CNTL_LOW_VOLT_IRQ	BIT(0)
@@ -67,6 +69,10 @@
 
 #define SM5703_FG_IOCV_AVG_DIFF_MIN	0x29
 #define SM5703_FG_IOCV_L_SPREAD_MAX	0x200
+#define SM5703_FG_IOCV_ERROR_COUNT	6
+#define SM5703_FG_IOCV_CURRENT_MAX_UA	40000
+#define SM5703_FG_IOCV_VOLTAGE_DIFF_UV	30000
+#define SM5703_FG_IOCV_VOLTAGE_STABLE_UV 15000
 
 struct sm5703_fg_model {
 	u16 table[3][SM5703_FG_TABLE_LENGTH];
@@ -98,7 +104,11 @@ struct sm5703_fg {
 	int alert_soc;
 	int alert_voltage_uv;
 	u16 last_iocv;
+	int previous_voltage_uv;
+	unsigned int iocv_error_count;
 	bool last_iocv_valid;
+	bool previous_voltage_valid;
+	bool rs_manual_active;
 	bool initialized;
 	bool alerts_valid;
 };
@@ -546,6 +556,89 @@ static int sm5703_fg_update_current_calibration(struct sm5703_fg *fg,
 	return sm5703_fg_write(fg, SM5703_FG_REG_CURR_CAL, calibration);
 }
 
+static int sm5703_fg_set_rs_manual(struct sm5703_fg *fg, bool enable)
+{
+	unsigned int control;
+	int ret;
+
+	/* Do not clear a manual mode inherited from firmware or another OS. */
+	if (!enable && !fg->rs_manual_active)
+		return 0;
+
+	ret = sm5703_fg_read(fg, SM5703_FG_REG_CNTL, &control);
+	if (ret)
+		return ret;
+	if (!enable && !(control & SM5703_FG_CNTL_RS_MAN_MODE)) {
+		fg->rs_manual_active = false;
+		return 0;
+	}
+	if (enable && fg->rs_manual_active &&
+	    control & SM5703_FG_CNTL_RS_MAN_MODE)
+		return 0;
+
+	if (enable) {
+		ret = sm5703_fg_write(fg, SM5703_FG_REG_RS_MAN,
+				      fg->model.rs[0]);
+		if (ret)
+			return ret;
+		ret = sm5703_fg_write(fg, SM5703_FG_REG_PARAM_UPDATE, 0);
+		if (ret)
+			return ret;
+		ret = sm5703_fg_write(fg, SM5703_FG_REG_PARAM_UPDATE, 1);
+		if (ret)
+			return ret;
+	}
+
+	if (enable)
+		control |= SM5703_FG_CNTL_RS_MAN_MODE;
+	else
+		control &= ~SM5703_FG_CNTL_RS_MAN_MODE;
+
+	dev_dbg(fg->dev, "switching to %s resistance mode\n",
+		enable ? "manual" : "automatic");
+	ret = sm5703_fg_write(fg, SM5703_FG_REG_CNTL, control);
+	if (!ret)
+		fg->rs_manual_active = enable;
+
+	return ret;
+}
+
+static int sm5703_fg_reconcile_ocv(struct sm5703_fg *fg)
+{
+	int current_ua, voltage_uv, ocv_uv;
+	bool stable, mismatch;
+	int ret;
+
+	ret = sm5703_fg_read_current(fg, &current_ua);
+	if (ret)
+		return ret;
+	ret = sm5703_fg_read_voltage(fg, SM5703_FG_REG_VOLTAGE,
+				     &voltage_uv);
+	if (ret)
+		return ret;
+	ret = sm5703_fg_read_ocv(fg, &ocv_uv);
+	if (ret)
+		return ret;
+
+	stable = fg->previous_voltage_valid &&
+		 abs(voltage_uv - fg->previous_voltage_uv) <=
+		 SM5703_FG_IOCV_VOLTAGE_STABLE_UV;
+	mismatch = abs(current_ua) < SM5703_FG_IOCV_CURRENT_MAX_UA &&
+		   abs(ocv_uv - voltage_uv) > SM5703_FG_IOCV_VOLTAGE_DIFF_UV;
+
+	if (stable && mismatch)
+		fg->iocv_error_count = min(fg->iocv_error_count + 1,
+					   SM5703_FG_IOCV_ERROR_COUNT);
+	else
+		fg->iocv_error_count = 0;
+
+	fg->previous_voltage_uv = voltage_uv;
+	fg->previous_voltage_valid = true;
+
+	return sm5703_fg_set_rs_manual(fg,
+		fg->iocv_error_count >= SM5703_FG_IOCV_ERROR_COUNT);
+}
+
 static int sm5703_fg_init_alerts(struct sm5703_fg *fg)
 {
 	unsigned int unused;
@@ -640,9 +733,9 @@ static int sm5703_fg_get_property(struct power_supply *psy,
 		if (!ret)
 			ret = sm5703_fg_update_current_calibration(fg, psy);
 		if (!ret)
-			ret = sm5703_fg_read_soc(fg, &value->intval);
+			ret = sm5703_fg_reconcile_ocv(fg);
 		if (!ret)
-			sm5703_fg_read_ocv(fg, NULL);
+			ret = sm5703_fg_read_soc(fg, &value->intval);
 		break;
 	case POWER_SUPPLY_PROP_CAPACITY_ALERT_MIN:
 		value->intval = fg->alert_soc;
