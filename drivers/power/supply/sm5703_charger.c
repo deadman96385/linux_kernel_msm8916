@@ -229,9 +229,9 @@ static int sm5703_get_status(struct sm5703_charger *charger, int *status)
 	if (ret)
 		return ret;
 
-	if (val & SM5703_STATUS3_DONE)
+	if (val & (SM5703_STATUS3_DONE | SM5703_STATUS3_TOPOFF))
 		*status = POWER_SUPPLY_STATUS_FULL;
-	else if (val & (SM5703_STATUS3_CHGON | SM5703_STATUS3_TOPOFF))
+	else if (val & SM5703_STATUS3_CHGON)
 		*status = POWER_SUPPLY_STATUS_CHARGING;
 	else
 		*status = POWER_SUPPLY_STATUS_NOT_CHARGING;
