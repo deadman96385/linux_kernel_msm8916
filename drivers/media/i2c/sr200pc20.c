@@ -2,9 +2,10 @@
 /*
  * V4L2 driver for the SiliconFile SR200PC20 image sensor.
  *
- * This deliberately implements only the native GTEL preview path. The
- * register sequence is the 26 MHz, 60 Hz, 800x600 YUV sequence shipped in
- * Samsung's downstream SM-T560NU kernel.
+ * This implements the native 800x600 processed-YUV paths shipped in Samsung's
+ * downstream SM-T560NU kernel. Normal preview retains Samsung's variable-rate
+ * auto-exposure tuning; the fixed 24 fps recording program is exposed as an
+ * alternate frame interval.
  */
 
 #include <linux/clk.h>
@@ -30,10 +31,28 @@
 #define SR200PC20_XCLK_FREQ		26000000
 #define SR200PC20_XCLK_MIN		25900000
 #define SR200PC20_XCLK_MAX		26100000
-#define SR200PC20_LINK_FREQ		144000000
-#define SR200PC20_PIXEL_RATE		18000000
+#define SR200PC20_LINK_FREQ_AUTO		144000000
+#define SR200PC20_LINK_FREQ_24FPS	180000000
+#define SR200PC20_PIXEL_RATE_AUTO	18000000
+#define SR200PC20_PIXEL_RATE_24FPS	22500000
 #define SR200PC20_WIDTH			800
 #define SR200PC20_HEIGHT			600
+
+static const s64 sr200pc20_link_freq_menu[] = {
+	SR200PC20_LINK_FREQ_AUTO,
+	SR200PC20_LINK_FREQ_24FPS,
+};
+
+#include "sr200pc20-gte.h"
+
+struct sr200pc20_mode {
+	const struct cci_reg_sequence *regs;
+	unsigned int num_regs;
+	struct v4l2_fract interval;
+	u64 pixel_rate;
+	u16 settle_ms;
+	u8 link_freq_index;
+};
 
 struct sr200pc20 {
 	struct v4l2_subdev sd;
@@ -48,7 +67,9 @@ struct sr200pc20 {
 	struct gpio_desc *reset_gpio;
 	struct gpio_desc *standby_gpio;
 
-	s64 link_freq;
+	const struct sr200pc20_mode *mode;
+	struct v4l2_ctrl *link_freq;
+	struct v4l2_ctrl *pixel_rate;
 	bool streaming;
 };
 
@@ -1135,6 +1156,61 @@ static const struct cci_reg_sequence sr200pc20_800x600_60hz[] = {
 
 };
 
+static const struct sr200pc20_mode sr200pc20_modes[] = {
+	{
+		.regs = sr200pc20_800x600_60hz,
+		.num_regs = ARRAY_SIZE(sr200pc20_800x600_60hz),
+		/* Samsung's normal preview PLL is documented as 16.5 fps. */
+		.interval = { .numerator = 2, .denominator = 33 },
+		.pixel_rate = SR200PC20_PIXEL_RATE_AUTO,
+		.settle_ms = 100,
+		.link_freq_index = 0,
+	},
+	{
+		.regs = sr200pc20_800x600_24fps_60hz,
+		.num_regs = ARRAY_SIZE(sr200pc20_800x600_24fps_60hz),
+		/* The downstream exposure program is documented as 24.01 fps. */
+		.interval = { .numerator = 100, .denominator = 2401 },
+		.pixel_rate = SR200PC20_PIXEL_RATE_24FPS,
+		.settle_ms = 400,
+		.link_freq_index = 1,
+	},
+};
+
+static void sr200pc20_update_controls(struct sr200pc20 *sensor,
+				      const struct sr200pc20_mode *mode)
+{
+	if (!sensor->link_freq || !sensor->pixel_rate)
+		return;
+
+	__v4l2_ctrl_s_ctrl(sensor->link_freq, mode->link_freq_index);
+	__v4l2_ctrl_s_ctrl_int64(sensor->pixel_rate, mode->pixel_rate);
+}
+
+static const struct sr200pc20_mode *
+sr200pc20_find_mode(const struct v4l2_fract *interval)
+{
+	unsigned int i;
+
+	/*
+	 * Only an explicitly advertised interval selects an alternate table.
+	 * In particular, a generic 30 fps request must not silently turn stock
+	 * preview into Samsung's fixed-exposure 24 fps recording mode.
+	 */
+	if (!interval->numerator || !interval->denominator)
+		return &sr200pc20_modes[0];
+
+	for (i = 0; i < ARRAY_SIZE(sr200pc20_modes); i++) {
+		const struct sr200pc20_mode *mode = &sr200pc20_modes[i];
+
+		if ((u64)interval->numerator * mode->interval.denominator ==
+		    (u64)mode->interval.numerator * interval->denominator)
+			return mode;
+	}
+
+	return &sr200pc20_modes[0];
+}
+
 static void sr200pc20_fill_format(struct v4l2_mbus_framefmt *fmt)
 {
 	fmt->width = SR200PC20_WIDTH;
@@ -1172,15 +1248,69 @@ static int sr200pc20_enum_frame_size(struct v4l2_subdev *sd,
 	return 0;
 }
 
+static int
+sr200pc20_enum_frame_interval(struct v4l2_subdev *sd,
+			      struct v4l2_subdev_state *state,
+			      struct v4l2_subdev_frame_interval_enum *fie)
+{
+	if (fie->pad || fie->index >= ARRAY_SIZE(sr200pc20_modes) ||
+	    fie->code != MEDIA_BUS_FMT_UYVY8_1X16 ||
+	    fie->width != SR200PC20_WIDTH || fie->height != SR200PC20_HEIGHT)
+		return -EINVAL;
+
+	fie->interval = sr200pc20_modes[fie->index].interval;
+	return 0;
+}
+
 static int sr200pc20_set_format(struct v4l2_subdev *sd,
 				struct v4l2_subdev_state *state,
 				struct v4l2_subdev_format *format)
 {
+	struct sr200pc20 *sensor = to_sr200pc20(sd);
 	struct v4l2_mbus_framefmt *fmt;
+	struct v4l2_fract *interval;
+
+	if (format->pad)
+		return -EINVAL;
 
 	sr200pc20_fill_format(&format->format);
 	fmt = v4l2_subdev_state_get_format(state, format->pad);
 	*fmt = format->format;
+
+	/* S_FMT follows stock and always returns to normal preview tuning. */
+	interval = v4l2_subdev_state_get_interval(state, format->pad);
+	*interval = sr200pc20_modes[0].interval;
+	if (format->which == V4L2_SUBDEV_FORMAT_ACTIVE) {
+		sensor->mode = &sr200pc20_modes[0];
+		sr200pc20_update_controls(sensor, sensor->mode);
+	}
+
+	return 0;
+}
+
+static int
+sr200pc20_set_frame_interval(struct v4l2_subdev *sd,
+			     struct v4l2_subdev_state *state,
+			     struct v4l2_subdev_frame_interval *fi)
+{
+	struct sr200pc20 *sensor = to_sr200pc20(sd);
+	const struct sr200pc20_mode *mode;
+	struct v4l2_fract *interval;
+
+	if (fi->pad)
+		return -EINVAL;
+	if (fi->which == V4L2_SUBDEV_FORMAT_ACTIVE && sensor->streaming)
+		return -EBUSY;
+
+	mode = sr200pc20_find_mode(&fi->interval);
+	interval = v4l2_subdev_state_get_interval(state, fi->pad);
+	*interval = mode->interval;
+	fi->interval = *interval;
+
+	if (fi->which == V4L2_SUBDEV_FORMAT_ACTIVE) {
+		sensor->mode = mode;
+		sr200pc20_update_controls(sensor, mode);
+	}
 
 	return 0;
 }
@@ -1221,22 +1351,22 @@ static int sr200pc20_init_state(struct v4l2_subdev *sd,
 static int sr200pc20_start_streaming(struct sr200pc20 *sensor)
 {
 	struct device *dev = sensor->sd.dev;
+	const struct sr200pc20_mode *mode = sensor->mode;
 	int ret = 0;
 
 	ret = pm_runtime_resume_and_get(dev);
 	if (ret < 0)
 		return ret;
 
-	cci_multi_reg_write(sensor->regmap, sr200pc20_800x600_60hz,
-			    ARRAY_SIZE(sr200pc20_800x600_60hz), &ret);
+	cci_multi_reg_write(sensor->regmap, mode->regs, mode->num_regs, &ret);
 	if (ret) {
-		dev_err(dev, "failed to program preview mode: %d\n", ret);
+		dev_err(dev, "failed to program camera mode: %d\n", ret);
 		pm_runtime_put(dev);
 		return ret;
 	}
 
-	/* The downstream 0xff/0x0a pseudo-register is a 100 ms delay. */
-	msleep(100);
+	/* Preserve the pseudo-delay associated with each downstream table. */
+	msleep(mode->settle_ms);
 	return 0;
 }
 
@@ -1284,8 +1414,11 @@ static const struct v4l2_subdev_video_ops sr200pc20_video_ops = {
 static const struct v4l2_subdev_pad_ops sr200pc20_pad_ops = {
 	.enum_mbus_code = sr200pc20_enum_mbus_code,
 	.enum_frame_size = sr200pc20_enum_frame_size,
+	.enum_frame_interval = sr200pc20_enum_frame_interval,
 	.get_fmt = v4l2_subdev_get_fmt,
 	.set_fmt = sr200pc20_set_format,
+	.get_frame_interval = v4l2_subdev_get_frame_interval,
+	.set_frame_interval = sr200pc20_set_frame_interval,
 	.get_selection = sr200pc20_get_selection,
 };
 
@@ -1393,6 +1526,7 @@ static int sr200pc20_check_hwcfg(struct sr200pc20 *sensor)
 		.bus_type = V4L2_MBUS_CSI2_DPHY,
 	};
 	struct fwnode_handle *endpoint;
+	unsigned long freq_bitmap;
 	int ret;
 
 	endpoint = fwnode_graph_get_next_endpoint(dev_fwnode(dev), NULL);
@@ -1410,16 +1544,16 @@ static int sr200pc20_check_hwcfg(struct sr200pc20 *sensor)
 		goto free_endpoint;
 	}
 
-	if (ep.nr_of_link_frequencies != 1) {
-		dev_err(dev, "one link-frequency value is required\n");
-		ret = -EINVAL;
+	ret = v4l2_link_freq_to_bitmap(dev, ep.link_frequencies,
+				       ep.nr_of_link_frequencies,
+				       sr200pc20_link_freq_menu,
+				       ARRAY_SIZE(sr200pc20_link_freq_menu),
+				       &freq_bitmap);
+	if (ret)
 		goto free_endpoint;
-	}
 
-	sensor->link_freq = ep.link_frequencies[0];
-	if (sensor->link_freq != SR200PC20_LINK_FREQ) {
-		dev_err(dev, "unsupported link frequency %lld Hz\n",
-			sensor->link_freq);
+	if (freq_bitmap != GENMASK(ARRAY_SIZE(sr200pc20_link_freq_menu) - 1, 0)) {
+		dev_err(dev, "firmware must enable both supported link frequencies\n");
 		ret = -EINVAL;
 	}
 
@@ -1430,25 +1564,28 @@ free_endpoint:
 
 static int sr200pc20_init_controls(struct sr200pc20 *sensor)
 {
+	struct v4l2_ctrl_handler *ctrls = &sensor->ctrls;
 	struct v4l2_fwnode_device_properties props;
-	struct v4l2_ctrl *ctrl;
 	int ret;
 
-	ret = v4l2_ctrl_handler_init(&sensor->ctrls, 4);
+	ret = v4l2_ctrl_handler_init(ctrls, 4);
 	if (ret)
 		return ret;
 
-	ctrl = v4l2_ctrl_new_int_menu(&sensor->ctrls, NULL,
-				      V4L2_CID_LINK_FREQ, 0, 0,
-				      &sensor->link_freq);
-	if (ctrl)
-		ctrl->flags |= V4L2_CTRL_FLAG_READ_ONLY;
+	sensor->link_freq = v4l2_ctrl_new_int_menu(ctrls, NULL,
+						   V4L2_CID_LINK_FREQ,
+						   ARRAY_SIZE(sr200pc20_link_freq_menu) - 1,
+						   0, sr200pc20_link_freq_menu);
+	if (sensor->link_freq)
+		sensor->link_freq->flags |= V4L2_CTRL_FLAG_READ_ONLY;
 
-	ctrl = v4l2_ctrl_new_std(&sensor->ctrls, NULL, V4L2_CID_PIXEL_RATE,
-				 SR200PC20_PIXEL_RATE, SR200PC20_PIXEL_RATE,
-				 1, SR200PC20_PIXEL_RATE);
-	if (ctrl)
-		ctrl->flags |= V4L2_CTRL_FLAG_READ_ONLY;
+	sensor->pixel_rate = v4l2_ctrl_new_std(ctrls, NULL,
+					       V4L2_CID_PIXEL_RATE,
+					       SR200PC20_PIXEL_RATE_AUTO,
+					       SR200PC20_PIXEL_RATE_24FPS,
+					       1, SR200PC20_PIXEL_RATE_AUTO);
+	if (sensor->pixel_rate)
+		sensor->pixel_rate->flags |= V4L2_CTRL_FLAG_READ_ONLY;
 
 	ret = v4l2_fwnode_device_parse(sensor->sd.dev, &props);
 	if (ret)
@@ -1481,6 +1618,7 @@ static int sr200pc20_probe(struct i2c_client *client)
 	sensor = devm_kzalloc(dev, sizeof(*sensor), GFP_KERNEL);
 	if (!sensor)
 		return -ENOMEM;
+	sensor->mode = &sr200pc20_modes[0];
 
 	v4l2_i2c_subdev_init(&sensor->sd, client, &sr200pc20_subdev_ops);
 	sensor->sd.internal_ops = &sr200pc20_internal_ops;
