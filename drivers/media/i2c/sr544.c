@@ -32,10 +32,12 @@
 
 #define SR544_REG_FRAME_LENGTH		CCI_REG16(0x0006)
 #define SR544_FRAME_LENGTH_MAX		0xffff
+#define SR544_FRAME_LENGTH_DEFAULT	0x07c0
 #define SR544_REG_EXPOSURE		CCI_REG16(0x0004)
 #define SR544_EXPOSURE_MIN		4
 #define SR544_EXPOSURE_MARGIN		4
-#define SR544_EXPOSURE_DEFAULT		0x07e0
+#define SR544_EXPOSURE_DEFAULT		(SR544_FRAME_LENGTH_DEFAULT - \
+					 SR544_EXPOSURE_MARGIN)
 #define SR544_REG_ANALOGUE_GAIN		CCI_REG8(0x003a)
 #define SR544_ANALOGUE_GAIN_MIN		0x00
 #define SR544_ANALOGUE_GAIN_MAX		0xf0
@@ -63,7 +65,8 @@
 #define SR544_XCLK_MIN			25900000
 #define SR544_XCLK_MAX			26100000
 #define SR544_LINK_FREQ			440000000
-#define SR544_PIXEL_RATE		176000000
+/* VT pixel clock used for line, frame and coarse-integration timing. */
+#define SR544_VT_PIXEL_RATE		172786080
 #define SR544_PIXEL_ARRAY_WIDTH		2592
 #define SR544_PIXEL_ARRAY_HEIGHT	1944
 
@@ -72,6 +75,7 @@ struct sr544_mode {
 	u32 height;
 	u32 line_length;
 	u32 frame_length;
+	u32 exposure_default;
 	struct v4l2_rect crop;
 	const struct cci_reg_sequence *reg_list;
 	unsigned int num_regs;
@@ -129,7 +133,7 @@ static const struct cci_reg_sequence sr544_2592x1944_regs[] = {
 	{ CCI_REG16(0x012e), 0x0798 },
 	{ CCI_REG16(0x0110), 0x0a20 },
 	{ CCI_REG16(0x0112), 0x0798 },
-	{ CCI_REG16(0x0006), 0x07c0 },
+	{ CCI_REG16(0x0006), SR544_FRAME_LENGTH_DEFAULT },
 	{ CCI_REG16(0x0008), 0x0b40 },
 	{ CCI_REG16(0x000a), 0x0db0 },
 	{ CCI_REG16(0x0500), 0x0000 },
@@ -137,7 +141,7 @@ static const struct cci_reg_sequence sr544_2592x1944_regs[] = {
 	{ CCI_REG16(0x001e), 0x0101 },
 	{ CCI_REG16(0x0032), 0x0101 },
 	{ CCI_REG16(0x0002), 0x0539 },
-	{ CCI_REG16(0x0004), 0x07e0 },
+	{ CCI_REG16(0x0004), SR544_EXPOSURE_DEFAULT },
 	{ CCI_REG16(0x0a04), 0x011a },
 };
 
@@ -159,7 +163,7 @@ static const struct cci_reg_sequence sr544_2592x1458_regs[] = {
 	{ CCI_REG16(0x012e), 0x05b2 },
 	{ CCI_REG16(0x0110), 0x0a20 },
 	{ CCI_REG16(0x0112), 0x05b2 },
-	{ CCI_REG16(0x0006), 0x07c0 },
+	{ CCI_REG16(0x0006), SR544_FRAME_LENGTH_DEFAULT },
 	{ CCI_REG16(0x0008), 0x0b40 },
 	{ CCI_REG16(0x000a), 0x0db0 },
 	{ CCI_REG16(0x0700), 0x0590 },
@@ -187,7 +191,7 @@ static const struct cci_reg_sequence sr544_648x488_regs[] = {
 	{ CCI_REG16(0x012e), 0x01e8 },
 	{ CCI_REG16(0x0110), 0x0288 },
 	{ CCI_REG16(0x0112), 0x01e8 },
-	{ CCI_REG16(0x0006), 0x01f8 },
+	{ CCI_REG16(0x0006), SR544_FRAME_LENGTH_DEFAULT },
 	{ CCI_REG16(0x0008), 0x0b40 },
 	{ CCI_REG16(0x000a), 0x0db0 },
 	{ CCI_REG16(0x0700), 0x215a },
@@ -202,8 +206,8 @@ static const struct sr544_mode sr544_modes[] = {
 		.width = 2592,
 		.height = 1944,
 		.line_length = 2880,
-		/* Preserve the validated 29.69 fps exposure-safe default. */
-		.frame_length = SR544_EXPOSURE_DEFAULT + SR544_EXPOSURE_MARGIN,
+		.frame_length = SR544_FRAME_LENGTH_DEFAULT,
+		.exposure_default = SR544_EXPOSURE_DEFAULT,
 		.crop = {
 			.width = SR544_PIXEL_ARRAY_WIDTH,
 			.height = SR544_PIXEL_ARRAY_HEIGHT,
@@ -215,7 +219,8 @@ static const struct sr544_mode sr544_modes[] = {
 		.width = 2592,
 		.height = 1458,
 		.line_length = 2880,
-		.frame_length = SR544_EXPOSURE_DEFAULT + SR544_EXPOSURE_MARGIN,
+		.frame_length = SR544_FRAME_LENGTH_DEFAULT,
+		.exposure_default = SR544_EXPOSURE_DEFAULT,
 		.crop = {
 			.top = 242,
 			.width = 2592,
@@ -228,7 +233,8 @@ static const struct sr544_mode sr544_modes[] = {
 		.width = 648,
 		.height = 488,
 		.line_length = 2880,
-		.frame_length = 504,
+		.frame_length = SR544_FRAME_LENGTH_DEFAULT,
+		.exposure_default = SR544_EXPOSURE_DEFAULT,
 		.crop = {
 			.width = SR544_PIXEL_ARRAY_WIDTH,
 			.height = SR544_PIXEL_ARRAY_HEIGHT,
@@ -461,8 +467,6 @@ static int sr544_enum_frame_size(struct v4l2_subdev *sd,
 static int sr544_update_mode_controls(struct sr544 *sensor,
 				      const struct sr544_mode *mode)
 {
-	s64 exposure_default = min_t(s64, SR544_EXPOSURE_DEFAULT,
-				     mode->frame_length - SR544_EXPOSURE_MARGIN);
 	s64 hblank = mode->line_length - mode->width;
 	s64 vblank = mode->frame_length - mode->height;
 	int ret;
@@ -481,7 +485,8 @@ static int sr544_update_mode_controls(struct sr544 *sensor,
 	if (ret)
 		return ret;
 
-	return __v4l2_ctrl_s_ctrl(sensor->exposure, exposure_default);
+	return __v4l2_ctrl_s_ctrl(sensor->exposure,
+				  mode->exposure_default);
 }
 
 static int sr544_set_format(struct v4l2_subdev *sd,
@@ -818,8 +823,7 @@ static int sr544_set_ctrl(struct v4l2_ctrl *ctrl)
 					 exposure_max,
 					 sensor->exposure->step,
 					 min_t(s64,
-					       sensor->cur_mode->frame_length -
-					       SR544_EXPOSURE_MARGIN,
+					       sensor->cur_mode->exposure_default,
 					       exposure_max));
 	}
 
@@ -885,8 +889,8 @@ static int sr544_init_controls(struct sr544 *sensor)
 
 	ctrl = v4l2_ctrl_new_std(&sensor->ctrls, &sr544_ctrl_ops,
 				 V4L2_CID_PIXEL_RATE,
-				 SR544_PIXEL_RATE, SR544_PIXEL_RATE,
-				 1, SR544_PIXEL_RATE);
+				 SR544_VT_PIXEL_RATE, SR544_VT_PIXEL_RATE,
+				 1, SR544_VT_PIXEL_RATE);
 	if (ctrl)
 		ctrl->flags |= V4L2_CTRL_FLAG_READ_ONLY;
 
@@ -910,7 +914,7 @@ static int sr544_init_controls(struct sr544 *sensor)
 					     V4L2_CID_EXPOSURE,
 					     SR544_EXPOSURE_MIN,
 					     exposure_max, 1,
-					     SR544_EXPOSURE_DEFAULT);
+					     mode->exposure_default);
 	v4l2_ctrl_new_std(&sensor->ctrls, &sr544_ctrl_ops,
 			  V4L2_CID_ANALOGUE_GAIN,
 			  SR544_ANALOGUE_GAIN_MIN, SR544_ANALOGUE_GAIN_MAX,
