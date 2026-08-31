@@ -63,7 +63,8 @@ properties:
             maxItems: 1
 
           link-frequencies:
-            maxItems: 1
+            minItems: 2
+            maxItems: 2
 
         required:
           - data-lanes
@@ -111,7 +112,7 @@ examples:
             port {
                 endpoint {
                     data-lanes = <1>;
-                    link-frequencies = /bits/ 64 <144000000>;
+                    link-frequencies = /bits/ 64 <144000000 180000000>;
                     remote-endpoint = <&csi_in>;
                 };
             };
