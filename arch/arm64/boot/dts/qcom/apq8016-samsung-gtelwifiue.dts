@@ -418,7 +418,7 @@
 			sr200pc20_ep: endpoint {
 				clock-noncontinuous;
 				data-lanes = <1>;
-				link-frequencies = /bits/ 64 <144000000>;
+				link-frequencies = /bits/ 64 <144000000 180000000>;
 				remote-endpoint = <&csiphy1_ep>;
 			};
 		};
