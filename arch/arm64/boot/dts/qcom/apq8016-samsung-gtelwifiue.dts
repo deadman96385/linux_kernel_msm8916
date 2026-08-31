@@ -412,7 +412,7 @@
 		vio-supply = <&reg_camera_vio>;
 
 		orientation = <0>; /* Front facing */
-		rotation = <270>;
+		rotation = <90>;
 
 		port {
 			sr200pc20_ep: endpoint {
@@ -445,7 +445,7 @@
 		vaf-supply = <&sm5703_ldo3>;
 
 		orientation = <1>; /* Back facing */
-		rotation = <90>;
+		rotation = <270>;
 
 		port {
 			s5k4ecgx_ep: endpoint {
