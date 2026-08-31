@@ -8,6 +8,7 @@
  * alternate frame interval.
  */
 
+#include <linux/bitops.h>
 #include <linux/clk.h>
 #include <linux/delay.h>
 #include <linux/gpio/consumer.h>
@@ -70,6 +71,7 @@ struct sr200pc20 {
 	const struct sr200pc20_mode *mode;
 	struct v4l2_ctrl *link_freq;
 	struct v4l2_ctrl *pixel_rate;
+	unsigned long link_freq_bitmap;
 	bool streaming;
 };
 
@@ -1188,7 +1190,8 @@ static void sr200pc20_update_controls(struct sr200pc20 *sensor,
 }
 
 static const struct sr200pc20_mode *
-sr200pc20_find_mode(const struct v4l2_fract *interval)
+sr200pc20_find_mode(struct sr200pc20 *sensor,
+		    const struct v4l2_fract *interval)
 {
 	unsigned int i;
 
@@ -1202,6 +1205,10 @@ sr200pc20_find_mode(const struct v4l2_fract *interval)
 
 	for (i = 0; i < ARRAY_SIZE(sr200pc20_modes); i++) {
 		const struct sr200pc20_mode *mode = &sr200pc20_modes[i];
+
+		if (!test_bit(mode->link_freq_index,
+			      &sensor->link_freq_bitmap))
+			continue;
 
 		if ((u64)interval->numerator * mode->interval.denominator ==
 		    (u64)mode->interval.numerator * interval->denominator)
@@ -1253,13 +1260,28 @@ sr200pc20_enum_frame_interval(struct v4l2_subdev *sd,
 			      struct v4l2_subdev_state *state,
 			      struct v4l2_subdev_frame_interval_enum *fie)
 {
-	if (fie->pad || fie->index >= ARRAY_SIZE(sr200pc20_modes) ||
-	    fie->code != MEDIA_BUS_FMT_UYVY8_1X16 ||
+	struct sr200pc20 *sensor = to_sr200pc20(sd);
+	unsigned int index = 0;
+	unsigned int i;
+
+	if (fie->pad || fie->code != MEDIA_BUS_FMT_UYVY8_1X16 ||
 	    fie->width != SR200PC20_WIDTH || fie->height != SR200PC20_HEIGHT)
 		return -EINVAL;
 
-	fie->interval = sr200pc20_modes[fie->index].interval;
-	return 0;
+	for (i = 0; i < ARRAY_SIZE(sr200pc20_modes); i++) {
+		const struct sr200pc20_mode *mode = &sr200pc20_modes[i];
+
+		if (!test_bit(mode->link_freq_index,
+			      &sensor->link_freq_bitmap))
+			continue;
+
+		if (index++ == fie->index) {
+			fie->interval = mode->interval;
+			return 0;
+		}
+	}
+
+	return -EINVAL;
 }
 
 static int sr200pc20_set_format(struct v4l2_subdev *sd,
@@ -1304,7 +1326,7 @@ sr200pc20_set_frame_interval(struct v4l2_subdev *sd,
 	if (fi->which == V4L2_SUBDEV_FORMAT_ACTIVE && sensor->streaming)
 		return -EBUSY;
 
-	mode = sr200pc20_find_mode(&fi->interval);
+	mode = sr200pc20_find_mode(sensor, &fi->interval);
 	interval = v4l2_subdev_state_get_interval(state, fi->pad);
 	*interval = mode->interval;
 	fi->interval = *interval;
@@ -1554,10 +1576,13 @@ static int sr200pc20_check_hwcfg(struct sr200pc20 *sensor)
 	if (ret)
 		goto free_endpoint;
 
-	if (freq_bitmap != GENMASK(ARRAY_SIZE(sr200pc20_link_freq_menu) - 1, 0)) {
-		dev_err(dev, "firmware must enable both supported link frequencies\n");
+	if (!test_bit(0, &freq_bitmap)) {
+		dev_err(dev, "firmware must enable the normal preview link frequency\n");
 		ret = -EINVAL;
+		goto free_endpoint;
 	}
+
+	sensor->link_freq_bitmap = freq_bitmap;
 
 free_endpoint:
 	v4l2_fwnode_endpoint_free(&ep);
@@ -1568,16 +1593,20 @@ static int sr200pc20_init_controls(struct sr200pc20 *sensor)
 {
 	struct v4l2_ctrl_handler *ctrls = &sensor->ctrls;
 	struct v4l2_fwnode_device_properties props;
+	unsigned long menu_skip_mask;
 	int ret;
 
 	ret = v4l2_ctrl_handler_init(ctrls, 4);
 	if (ret)
 		return ret;
 
+	menu_skip_mask = GENMASK(ARRAY_SIZE(sr200pc20_link_freq_menu) - 1, 0);
+	menu_skip_mask &= ~sensor->link_freq_bitmap;
 	sensor->link_freq = v4l2_ctrl_new_int_menu(ctrls, NULL,
 						   V4L2_CID_LINK_FREQ,
 						   ARRAY_SIZE(sr200pc20_link_freq_menu) - 1,
-						   0, sr200pc20_link_freq_menu);
+						   menu_skip_mask,
+						   sr200pc20_link_freq_menu);
 	if (sensor->link_freq)
 		sensor->link_freq->flags |= V4L2_CTRL_FLAG_READ_ONLY;
 
