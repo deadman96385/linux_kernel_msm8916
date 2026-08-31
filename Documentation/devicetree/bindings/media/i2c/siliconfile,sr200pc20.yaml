@@ -63,8 +63,14 @@ properties:
             maxItems: 1
 
           link-frequencies:
-            minItems: 2
+            description:
+              The normal preview frequency is required. The recording-mode
+              frequency is optional for modules that support that tuning.
+            minItems: 1
             maxItems: 2
+            items:
+              - const: 144000000
+              - const: 180000000
 
         required:
           - data-lanes
