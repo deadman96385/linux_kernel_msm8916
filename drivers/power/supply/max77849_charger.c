@@ -670,8 +670,8 @@ static int max77849_get_fuel_gauge_temp(struct max77849_charger *chg,
 	struct power_supply *fuel_gauge;
 	int ret;
 
-	fuel_gauge = power_supply_get_by_phandle(chg->dev->of_node,
-						 "maxim,monitored-fuel-gauge");
+	fuel_gauge = power_supply_get_by_reference(dev_fwnode(chg->dev),
+						   "maxim,monitored-fuel-gauge");
 	if (IS_ERR(fuel_gauge))
 		return PTR_ERR(fuel_gauge);
 	if (!fuel_gauge)
@@ -1044,7 +1044,7 @@ static int max77849_charger_probe(struct platform_device *pdev)
 	platform_set_drvdata(pdev, chg);
 
 	psy_cfg.drv_data = chg;
-	psy_cfg.of_node = pdev->dev.of_node;
+	psy_cfg.fwnode = dev_fwnode(&pdev->dev);
 	chg->psy = devm_power_supply_register(&pdev->dev,
 					      &max77849_charger_desc,
 					      &psy_cfg);
@@ -1127,7 +1127,7 @@ static struct platform_driver max77849_charger_driver = {
 		.pm = pm_sleep_ptr(&max77849_charger_pm_ops),
 	},
 	.probe = max77849_charger_probe,
-	.remove_new = max77849_charger_remove,
+	.remove = max77849_charger_remove,
 };
 module_platform_driver(max77849_charger_driver);
 
