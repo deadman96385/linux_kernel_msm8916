@@ -1272,6 +1272,8 @@ static int sr200pc20_set_format(struct v4l2_subdev *sd,
 
 	if (format->pad)
 		return -EINVAL;
+	if (format->which == V4L2_SUBDEV_FORMAT_ACTIVE && sensor->streaming)
+		return -EBUSY;
 
 	sr200pc20_fill_format(&format->format);
 	fmt = v4l2_subdev_state_get_format(state, format->pad);
