@@ -23,6 +23,7 @@ properties:
       - items:
           - enum:
               - qcom,apq8016-sbc
+              - samsung,gtelwifiue
               - schneider,apq8016-hmibsc
           - const: qcom,apq8016
 
