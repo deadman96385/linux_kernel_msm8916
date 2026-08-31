@@ -489,8 +489,8 @@ static int max77849_muic_probe(struct platform_device *pdev)
 		return dev_err_probe(&pdev->dev, -ENODEV,
 				     "MUIC regmap unavailable\n");
 
-	muic->charger = devm_power_supply_get_by_phandle(&pdev->dev,
-							 "maxim,charger");
+	muic->charger = devm_power_supply_get_by_reference(&pdev->dev,
+							   "maxim,charger");
 	if (IS_ERR(muic->charger))
 		return dev_err_probe(&pdev->dev, PTR_ERR(muic->charger),
 				     "charger power supply unavailable\n");
@@ -681,7 +681,7 @@ static struct platform_driver max77849_muic_driver = {
 		.pm = pm_sleep_ptr(&max77849_muic_pm_ops),
 	},
 	.probe = max77849_muic_probe,
-	.remove_new = max77849_muic_remove,
+	.remove = max77849_muic_remove,
 	.shutdown = max77849_muic_shutdown,
 };
 module_platform_driver(max77849_muic_driver);
